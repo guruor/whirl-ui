@@ -1,0 +1,26 @@
+# Secrets and local configuration: never committed, and the `.env.EXAMPLE` beside each is the
+# template that is.
+.env
+.env.*
+!.env.EXAMPLE
+
+# Build output
+build/
+dist/
+target/
+out/
+*.o
+*.a
+*.so
+*.dylib
+
+# Local state and caches
+.cache/
+tmp/
+*.log
+
+# Editors and the operating system
+.DS_Store
+.idea/
+.vscode/
+*.swp
