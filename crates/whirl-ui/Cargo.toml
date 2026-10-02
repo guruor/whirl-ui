@@ -1,0 +1,10 @@
+[package]
+name = "whirl-ui"
+description = "the whirl tray app: a lightweight menu bar frontend for the whirl daemon, macOS first"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+whirlui-client = { workspace = true }

@@ -1,0 +1,9 @@
+# The single source of the toolchain version, and the reason it exists rather
+# than tracking `stable`: rustfmt output changes between releases, so an
+# unpinned toolchain turns formatting into a "wrong on your machine" review
+# topic. One version, everywhere, and a one-line change when it moves. The
+# daemon's workspace pins the same channel and the same components.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
