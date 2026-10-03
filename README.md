@@ -62,6 +62,4 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
 
 ## License
 
-There is no `LICENSE` file, which means all rights are reserved. That is an open decision rather than
-an oversight: the intent is a reference implementation other people can reuse, and no license is the
-thing that currently prevents it.
+MIT. See [LICENSE](LICENSE).
