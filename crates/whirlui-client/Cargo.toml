@@ -7,3 +7,10 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The protocol grammar, the config parser and the platform default paths, from
+# the daemon's own crate rather than re-derived here: docs/architecture.md
+# sections 2 and 4 are one document, `whirl-core` is its one implementation, and
+# a frontend that wrote its own parser would be the second implementation
+# section 8 item 4 refuses. Pinned to a revision, not a branch, so the grammar
+# this client was compiled against cannot change under it.
+whirl-core = { git = "https://github.com/guruor/whirl", rev = "397a99c45cabd2b0a8cf76d7a81fef45e0bc4339" }
