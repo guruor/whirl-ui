@@ -3,6 +3,11 @@
 version = 4
 
 [[package]]
+name = "whirl-core"
+version = "0.1.0"
+source = "git+https://github.com/guruor/whirl?rev=397a99c45cabd2b0a8cf76d7a81fef45e0bc4339#397a99c45cabd2b0a8cf76d7a81fef45e0bc4339"
+
+[[package]]
 name = "whirl-ui"
 version = "0.1.0"
 dependencies = [
@@ -12,3 +17,6 @@ dependencies = [
 [[package]]
 name = "whirlui-client"
 version = "0.1.0"
+dependencies = [
+ "whirl-core",
+]
