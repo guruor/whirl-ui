@@ -19,6 +19,9 @@ out/
 tmp/
 *.log
 
+# agent worktrees, created inside this repo: generated copies, not source
+.worktrees/
+
 # Editors and the operating system
 .DS_Store
 .idea/
