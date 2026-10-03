@@ -30,3 +30,14 @@ eframe = { version = "0.36.2", default-features = false, features = ["glow", "de
 # produce, so when a maintainer asks for a screenshot the app writes its own
 # pixels: the screen would carry whatever else the machine was showing.
 png = "0.17"
+
+# The tray itself is macOS-only, and its two crates are declared that way rather
+# than merely cfg-gated in the code: a target-specific dependency keeps them out
+# of the Linux and Windows builds entirely. `tray-icon` is the status item and
+# its menu; `winit` is here for one call that eframe does not surface: the macOS
+# activation policy (see `tray.rs`), which is what keeps the app out of the
+# Dock. It is the same 0.30 line eframe itself depends on, so it is one crate
+# and not two.
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.26", default-features = false }
+winit = { version = "0.30", default-features = false }

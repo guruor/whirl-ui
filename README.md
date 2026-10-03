@@ -38,9 +38,9 @@ show and says so.
 
 ## Modes
 
-With no arguments the app opens the settings window. A window cannot be asserted by a test, so every
-question it answers is also answerable from a terminal, in the daemon's own words rather than in a
-format invented here:
+With no arguments the app starts its menu bar item (macOS), whose `Settings…` row opens the settings
+window. A window cannot be asserted by a test, so every question it answers is also answerable from a
+terminal, in the daemon's own words rather than in a format invented here:
 
     cargo run -- --dump-status         # the daemon's status, key by key
     cargo run -- --dump-sources        # each source's enabled state and the reason it has one

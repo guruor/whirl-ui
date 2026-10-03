@@ -31,6 +31,9 @@ use whirlui_client::{Client, ClientError, Refusal};
 
 use crate::settings::{Answers, Settings};
 
+use crate::menu;
+use crate::state::View;
+
 /// The app exited successfully.
 pub const EXIT_OK: u8 = 0;
 /// The daemon answered `ERR`; the code on the line says why.
@@ -51,6 +54,8 @@ pub enum Mode {
     ConfigCheck,
     /// What the settings window shows, as three panes.
     Settings,
+    /// The menu bar item's rows, in the order they appear on screen.
+    Menu,
 }
 
 impl Mode {
@@ -61,11 +66,13 @@ impl Mode {
             Mode::Sources => "--dump-sources",
             Mode::ConfigCheck => "--dump-config-check",
             Mode::Settings => "--dump-settings",
+            Mode::Menu => "--menu-dump",
         }
     }
 
     /// Every mode, in the order the help text lists them.
-    pub const ALL: [Mode; 4] = [
+    pub const ALL: [Mode; 5] = [
+        Mode::Menu,
         Mode::Status,
         Mode::Sources,
         Mode::ConfigCheck,
@@ -113,6 +120,9 @@ pub fn run(mode: Mode) -> ExitCode {
         return ExitCode::from(code);
     }
 
+    if mode == Mode::Menu {
+        return menu();
+    }
     let mut client = match Client::connect() {
         Ok(client) => client,
         Err(error) => return report(&error),
@@ -123,11 +133,55 @@ pub fn run(mode: Mode) -> ExitCode {
         Mode::ConfigCheck => one(&mut client, &Request::ConfigCheck),
         // Handled above; a mode added here without a branch is a compile error.
         Mode::Settings => unreachable!(),
+        Mode::Menu => unreachable!("handled above, before a connection is opened"),
     };
     // `close` is how a client says it is finished rather than how it is allowed
     // to end; a failure to close is not worth reporting over the answer.
     let _ = client.close();
     code
+}
+
+/// The menu bar item's rows, without a menu bar.
+///
+/// The rows the tray puts on screen, in the same order, one per line
+/// (docs/milestones.md M1 criterion 3). One `status` fills the current-image
+/// line, exactly as the app does when it starts; nothing here opens a
+/// subscription or draws a window, so the command works with no display
+/// attached.
+///
+/// A daemon that is not running is a row list and not a failure: the item still
+/// appears, its first row says so, and the command exits 0 either way.
+fn menu() -> ExitCode {
+    let view = match Client::connect() {
+        Ok(mut client) => match client.status() {
+            Ok(status) => {
+                let _ = client.close();
+                View::live(status)
+            }
+            Err(error) => return menu_for(&error),
+        },
+        Err(error) => return menu_for(&error),
+    };
+    for line in menu::lines(&view) {
+        print_line(&line);
+    }
+    ExitCode::from(EXIT_OK)
+}
+
+/// The rows for a daemon this process could not read, and the reason when the
+/// reason is worth saying.
+///
+/// An unreachable daemon needs no explanation: the first row says it. A greeting
+/// this client cannot speak, or a line the grammar forbids, is a different fact
+/// and goes to stderr, because no row could carry it.
+fn menu_for(error: &ClientError) -> ExitCode {
+    if !error.unreachable() {
+        eprintln!("whirl-ui: {error}");
+    }
+    for line in menu::lines(&View::offline()) {
+        print_line(&line);
+    }
+    ExitCode::from(EXIT_OK)
 }
 
 /// One request, its data lines printed as the daemon wrote them.
@@ -233,8 +287,15 @@ mod tests {
         for mode in Mode::ALL {
             assert_eq!(Mode::parse(mode.flag()), Some(mode));
         }
-        assert_eq!(Mode::parse("--menu-dump"), None);
+        assert_eq!(Mode::parse("--menu-drop"), None);
         assert_eq!(Mode::parse("status"), None);
+        assert_eq!(Mode::parse("--dump-status"), Some(Mode::Status));
+    }
+
+    #[test]
+    fn the_menu_dump_is_the_first_mode_the_help_text_lists() {
+        assert_eq!(Mode::ALL.first(), Some(&Mode::Menu));
+        assert_eq!(Mode::parse("--menu-dump"), Some(Mode::Menu));
     }
 
     #[test]

@@ -2,38 +2,40 @@
 //!
 //! The tray is macOS-first. macOS-only code lands behind
 //! `#[cfg(target_os = "macos")]`, so the Linux and Windows builds compile the
-//! same workspace and stay green while those platforms are unfinished.
+//! same workspace and stay green while those platforms are unfinished
+//! (docs/milestones.md M4).
 //!
-//! Two things live here: the settings window ([`app`]) and the headless modes
-//! ([`dump`]) that answer the same questions from a terminal. The second exists
-//! because the first cannot be asserted by a test: every question the window
-//! answers is also answerable without a display, and `--dump-settings` prints the
-//! window's three panes exactly as it draws them.
-//!
-//! The exit codes are whirl's own (docs/architecture.md section 8 item 7):
-//! 0 success, 1 the daemon refused, 2 the daemon is unreachable, 3 the command
-//! line cannot work.
+//! Two things live here: the tray, whose menu is the product, the settings
+//! window ([`app`]) behind its `Settings…` row, and the headless modes
+//! ([`dump`]) that answer the same questions from a terminal. The modes exist
+//! because neither window can be asserted by a test: every question they answer
+//! is also answerable without a display.
 
 mod app;
 mod dump;
+mod menu;
 mod settings;
+mod state;
+#[cfg(target_os = "macos")]
+mod tray;
 
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use dump::{EXIT_OK, EXIT_USAGE, Mode};
+use dump::{EXIT_OK, EXIT_USAGE, Mode, print_line};
 
 const USAGE: &str = "\
 whirl-ui: a menu bar frontend for the whirl wallpaper daemon
 
 usage: whirl-ui [mode]
 
-With no mode the app starts: its settings window opens, read-only, on what the
-daemon reports. Closing that window does not quit the app, and the app never
-starts a daemon; with none running the window says so.
+With no mode the app starts its menu bar item (macOS). Its `Settings…` row opens
+the settings window, read-only, on what the daemon reports; closing that window
+does not quit the app, and the app never starts a daemon.
 
 modes:
+  --menu-dump           print the menu bar item's rows, in menu order
   --dump-status         print the daemon's status, key by key
   --dump-sources        print the sources, with each one's enabled state and reason
   --dump-config-check   print the effective plan the daemon adopted
@@ -42,16 +44,19 @@ modes:
   -h, --help            print this
 
 The dump modes talk to a running daemon: exit 0 on success, 1 if the daemon
-refused, 2 if it is not reachable, 3 if the command line cannot work.";
+refused, 2 if it is not reachable, 3 if the command line cannot work.
+`--menu-dump` is the exception: it exits 0 whether or not a daemon is running,
+because a menu bar item that says the daemon is not running is a row list and
+not a failure.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(first) = args.first().cloned() else {
-        return window(None);
+        return without_a_mode();
     };
 
     if first == "-h" || first == "--help" {
-        dump::print_line(USAGE);
+        print_line(USAGE);
         return ExitCode::from(EXIT_OK);
     }
 
@@ -99,4 +104,20 @@ fn window(capture: Option<PathBuf>) -> ExitCode {
             ExitCode::from(EXIT_USAGE)
         }
     }
+}
+
+/// No mode: the menu bar item itself.
+#[cfg(target_os = "macos")]
+fn without_a_mode() -> ExitCode {
+    tray::run()
+}
+
+/// No mode, on a platform the tray has not landed on yet.
+///
+/// The other two CI legs build this arm, which is the point: the workspace stays
+/// buildable everywhere while the tray is macOS-only (docs/milestones.md M4).
+#[cfg(not(target_os = "macos"))]
+fn without_a_mode() -> ExitCode {
+    eprintln!("whirl-ui: the menu bar item is macOS-only for now; try --menu-dump");
+    ExitCode::from(EXIT_USAGE)
 }
