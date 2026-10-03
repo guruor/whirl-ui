@@ -31,6 +31,15 @@ eframe = { version = "0.36.2", default-features = false, features = ["glow", "de
 # produce, so when a maintainer asks for a screenshot the app writes its own
 # pixels: the screen would carry whatever else the machine was showing.
 png = "0.17"
+# The one write path's document model, for the config file the daemon reads. The
+# file is edited as the JSON document it is rather than round-tripped through
+# `whirl-core`'s `Config`, because `Config` holds the schema's values and a round
+# trip through it would drop every key the schema does not name. `preserve_order`
+# is the point rather than a preference: without it the annotated file's keys
+# would come back sorted, and the comment keys its reader depends on would move
+# away from the values they annotate. The parser that judges the result is still
+# `whirl-core`'s, on the exact bytes about to land (see `config_file.rs`).
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # The tray itself is macOS-only, and its two crates are declared that way rather
 # than merely cfg-gated in the code: a target-specific dependency keeps them out
