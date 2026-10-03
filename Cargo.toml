@@ -1,0 +1,24 @@
+# The whirl-ui workspace: the reference frontend for the whirl wallpaper daemon.
+#
+# The daemon is headless and its interface is its socket protocol, so this
+# workspace is split the way the frontend is: a client that speaks the protocol
+# (`whirlui-client`) and the app built on it (`whirl-ui`).
+[workspace]
+resolver = "3"
+members = [
+  "crates/whirlui-client",
+  "crates/whirl-ui",
+]
+# `cargo run` at the workspace root is the app, so a milestone check can say
+# `cargo run -- --menu-dump` without naming a package.
+default-members = ["crates/whirl-ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Edition 2024's floor, and the same floor the daemon's workspace declares.
+rust-version = "1.85.0"
+repository = "https://github.com/guruor/whirl-ui"
+
+[workspace.dependencies]
+whirlui-client = { path = "crates/whirlui-client" }
