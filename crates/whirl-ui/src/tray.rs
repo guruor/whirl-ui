@@ -19,6 +19,11 @@
 //!   menu;
 //! - the UI thread draws the rows and owns the tray icon, which must be created
 //!   once the event loop is running (`tray-icon`'s own macOS requirement).
+//!
+//! The item's picture comes from [`crate::icon`], and it is the one thing here
+//! that changes without a menu rebuild: the two marks are template images, so
+//! macOS draws them from their alpha alone and inverts them for the menu bar's
+//! appearance, and the state decides which of the two is set.
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -34,6 +39,7 @@ use whirlui_client::{Client, ClientError, Event, Subscription, Update};
 
 use crate::app;
 use crate::dump::{self, EXIT_OK, EXIT_USAGE};
+use crate::icon;
 use crate::menu::{self, Action, Row, RowId};
 use crate::settings::Settings;
 use crate::state::View;
@@ -380,6 +386,9 @@ struct App {
     /// The rows currently on the tray, so a repaint that changed nothing
     /// rebuilds nothing.
     rendered: Vec<Row>,
+    /// The mark currently set, so a repaint that changed no state leaves the
+    /// icon alone. The menu is rebuilt for the same reason.
+    mark: icon::Mark,
 }
 
 impl App {
@@ -391,13 +400,20 @@ impl App {
         shared.attach(&cc.egui_ctx);
 
         let rendered = menu::rows(&shared.view());
+        let mark = icon::Mark::of(&shared.view());
         let tray = tray_icon::TrayIconBuilder::new()
-            // A text item: the app has no artwork yet and a made-up glyph would
-            // be a picture nobody chose. The name is also what a screenshot of
-            // the menu bar can be read against.
+            // The picture is the mark; the word beside it stays, because a
+            // screenshot of the bar is read against it.
             .with_title("whirl")
             .with_tooltip("whirl: the wallpaper daemon's menu")
             .with_menu(Box::new(build_menu(&rendered)))
+            // Templated, so AppKit draws the mark from its alpha alone and
+            // recolours it for a light or a dark menu bar. `tray-icon` 0.26.0
+            // deprecates the `set_icon_as_template`/`with_icon_as_template`
+            // spelling, and this workspace lints with `-D warnings`:
+            // `with_icon_templated` is the same request in one call, and
+            // `set_mark` below is its swap-time twin.
+            .with_icon_templated(artwork(mark)?)
             .build()?;
 
         let (ui, clicks) = (Arc::clone(&shared), actions);
@@ -426,6 +442,7 @@ impl App {
             tray: Some(tray),
             dialog: app::App::closed(),
             rendered,
+            mark,
         };
         // One pass is asked for from another thread, because asked for here it
         // would be discarded (see `Shared::attach`). It costs one thread start
@@ -442,6 +459,29 @@ fn first_pass(ctx: &egui::Context) {
     let _ = thread::Builder::new()
         .name("whirl-ui-first-pass".to_string())
         .spawn(move || ctx.request_repaint());
+}
+
+/// The mark as `tray-icon` takes it: raw RGBA.
+///
+/// The decoded file is already straight RGBA with the shape in its alpha, which
+/// is what a template image is; whether AppKit *draws* it as one is the
+/// caller's to say, and both callers below say yes.
+fn artwork(mark: icon::Mark) -> Result<tray_icon::Icon, Box<dyn std::error::Error + Send + Sync>> {
+    let art = mark.artwork()?;
+    Ok(tray_icon::Icon::from_rgba(art.rgba, art.width, art.height)?)
+}
+
+/// Swap the item's picture, keeping it a template image.
+///
+/// `set_icon` alone would draw the mark in its own black, which is invisible on
+/// a dark menu bar; `set_icon_templated` is the one call that sets the picture
+/// and asks for the template rendering at the same time.
+fn set_mark(
+    tray: &TrayIcon,
+    mark: icon::Mark,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tray.set_icon_templated(Some(artwork(mark)?))?;
+    Ok(())
 }
 
 /// What a click asks for, before anything is done about it.
@@ -497,6 +537,22 @@ impl eframe::App for App {
                 tray.set_menu(Some(Box::new(build_menu(&rows))));
             }
             self.rendered = rows;
+        }
+
+        // The picture, for the same reason and on the same pass as the rows: a
+        // `Paused` event changes both, and the mark is what makes the state
+        // readable with the menu shut.
+        let mark = icon::Mark::of(&self.shared.view());
+        if mark != self.mark {
+            if let Some(tray) = self.tray.as_ref()
+                && let Err(error) = set_mark(tray, mark)
+            {
+                // The files are compiled in, so this is a message about the
+                // machine rather than about the state, and the mark is recorded
+                // either way: a repaint that changes nothing retries nothing.
+                eprintln!("whirl-ui: the menu bar item's mark could not be set: {error}");
+            }
+            self.mark = mark;
         }
 
         // The window a `Settings…` click asked for. Showing a viewport is this

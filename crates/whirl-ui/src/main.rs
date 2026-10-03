@@ -13,6 +13,7 @@
 
 mod app;
 mod dump;
+mod icon;
 mod menu;
 mod settings;
 mod state;
