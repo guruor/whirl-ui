@@ -3,28 +3,41 @@ name = "whirl-ui"
 description = "the whirl tray app: a lightweight menu bar frontend for the whirl daemon, macOS first"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# The workspace floor plus one step: the window is egui through eframe 0.36.2,
+# whose MSRV is 1.95. `rust-toolchain.toml` carries the same version, so the
+# pinned toolchain and this manifest agree with the dependency by construction.
+# `whirlui-client` keeps the workspace floor: nothing about talking the protocol
+# needs 1.95.
+rust-version = "1.95.0"
 repository.workspace = true
 
 [dependencies]
 whirlui-client = { workspace = true }
-
-# The menu bar item is macOS-only for now, and it is declared that way rather
-# than merely cfg-gated in the code: a target-specific dependency keeps the
-# toolkit out of the Linux and Windows builds entirely, so the three-platform
-# matrix builds the same workspace with no GTK or X11 development package
-# anywhere near it. docs/milestones.md M4 is where the other two platforms
-# arrive.
+# The window, and the renderer under it: egui through eframe, the pair whirl's
+# `docs/research/frontend-stack.md` chose by measurement over Tauri and over Swift
+# with AppKit. Default features are off, so the build needs no platform's
+# windowing headers and the three CI legs compile one crate rather than three
+# variants of one; `glow` is the GL renderer, which needs no compute pipeline to
+# draw a dialog, and `default_fonts` is the one place the text comes from.
 #
-# The pair is `egui`/`eframe` 0.36 with `tray-icon` 0.26: `glow`, not `wgpu`,
-# because the tray has no 3D to draw and this app is measured on the glow build.
-# `winit` is here for one call that eframe does not surface: the macOS activation
-# policy (see `tray.rs`), which is what keeps the app out of the Dock. It is the
-# same 0.30 line eframe itself depends on, so it is one crate and not two.
+# `x11` and `wayland` are the two backends winit has on Linux. They are not
+# optional there: with neither, winit's own `compile_error!("The platform you're
+# compiling for is not supported by winit")` stops the build, which is how the
+# ubuntu leg of CI first failed. On macOS they are inert, and the tray is
+# macOS-first, but this workspace's suite and lint run on all three platforms.
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+# One PNG, for `--screenshot`. The window is the one deliverable a test cannot
+# produce, so when a maintainer asks for a screenshot the app writes its own
+# pixels: the screen would carry whatever else the machine was showing.
+png = "0.17"
+
+# The tray itself is macOS-only, and its two crates are declared that way rather
+# than merely cfg-gated in the code: a target-specific dependency keeps them out
+# of the Linux and Windows builds entirely. `tray-icon` is the status item and
+# its menu; `winit` is here for one call that eframe does not surface: the macOS
+# activation policy (see `tray.rs`), which is what keeps the app out of the
+# Dock. It is the same 0.30 line eframe itself depends on, so it is one crate
+# and not two.
 [target.'cfg(target_os = "macos")'.dependencies]
-eframe = { version = "0.36", default-features = false, features = [
-  "glow",
-  "default_fonts",
-] }
 tray-icon = { version = "0.26", default-features = false }
 winit = { version = "0.30", default-features = false }
