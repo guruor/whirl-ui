@@ -99,8 +99,8 @@ pub enum Action {
     Pause,
     Resume,
     Favourite,
-    /// Show the settings window, or the placeholder while that card has not
-    /// landed.
+    /// Show the settings window: the real one, `app`'s, from the `Settings…` row.
+    /// Every control is disabled and every pane says so.
     Settings,
     /// Quit this app. Never the daemon: its lifetime belongs to the OS
     /// supervisor (section 8, "must never" 3).
