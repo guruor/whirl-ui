@@ -4,7 +4,12 @@
 //! command line: `whirl-ui --dump-settings` prints the three panes it draws, and
 //! this file asserts them. The two states the card names are both here: a real
 //! daemon (which every assertion about values needs), and no daemon at all, where
-//! the panes render the reason, no control can be pressed and nothing crashes.
+//! the panes render the reason, the interval editor is still offered, and nothing
+//! crashes.
+//!
+//! The window's one editor is asserted in `write.rs`, which drives the same write
+//! path the interval field calls. What this file adds is the window itself: which
+//! pane carries what, and which panes are still read-only.
 //!
 //! The daemon is not built or started here. `whirl-ui` must never start one
 //! (whirl's docs/architecture.md section 8, "must never"), and neither does this
@@ -16,8 +21,8 @@ use std::process::Command;
 
 use whirlui_client::Client;
 
-/// The line every pane carries while the window edits nothing.
-const EDITING_ARRIVES_IN_M2: &str = "editing arrives in M2";
+/// The line the Sources pane carries while its controls are disabled.
+const SOURCES_READ_ONLY: &str = "read-only: editing sources is a later card";
 
 /// The app, run with a socket path that has nothing behind it.
 fn run_with_socket(socket: &Path, mode: &str) -> std::process::Output {
@@ -48,7 +53,7 @@ fn stderr_of(output: &std::process::Output) -> String {
 }
 
 #[test]
-fn with_no_daemon_the_panes_render_the_reason_and_no_control_is_enabled() {
+fn with_no_daemon_the_panes_render_the_reason_and_the_interval_is_still_offered() {
     let scratch = empty_directory("absent");
     let socket = scratch.join("whirl.sock");
     let output = run_with_socket(&socket, "--dump-settings");
@@ -58,24 +63,27 @@ fn with_no_daemon_the_panes_render_the_reason_and_no_control_is_enabled() {
     // No crash: the process ran to its own exit rather than panicking.
     assert!(!stderr.contains("panicked"), "{stderr}");
 
-    // The three panes, the reason in them, and the line that says why nothing
-    // can be pressed.
+    // The three panes, and the reason in each of them.
     for title in ["Sources", "Rotation", "App"] {
         assert!(stdout.contains(title), "{stdout}");
     }
-    assert!(
-        stdout.contains("the daemon is not reachable"),
+    assert_eq!(
+        stdout.matches("the daemon is not reachable").count(),
+        3,
         "every pane renders the reason: {stdout}"
     );
-    assert_eq!(
-        stdout.matches(EDITING_ARRIVES_IN_M2).count(),
-        3,
-        "one visible line per pane: {stdout}"
-    );
+
+    // Sources is still read-only. The Rotation pane is not: the interval editor
+    // is offered with no daemon at all, which is the state the write path exists
+    // for, and its line is the only one in the window that is not a refusal.
+    assert_eq!(stdout.matches(SOURCES_READ_ONLY).count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("interval: ").count(), 1, "{stdout}");
+    assert!(stdout.contains("next rotation"), "{stdout}");
 
     // The reason names the socket file and not the directory it is missing from:
-    // the client's own diagnostics are path-free.
+    // the client's own diagnostics are path-free, and so is the window.
     assert!(!stdout.contains("whirlui-window-absent"), "{stdout}");
+    assert!(!stdout.contains("/Users"), "{stdout}");
 
     // A pane with no answer shows the reason and never an empty list, which would
     // say "there are no sources" instead of "the daemon was not asked".
@@ -128,7 +136,8 @@ fn with_a_daemon_the_panes_show_what_the_daemon_reports() {
         assert!(stdout.contains(&row), "whirl sources row: {row}\n{stdout}");
     }
 
-    // The Rotation pane: the plan the daemon adopted, key for key.
+    // The Rotation pane: the plan the daemon adopted, key for key, and the
+    // interval editor seeded from it.
     for key in [
         "schedule.interval_seconds",
         "display.mode",
@@ -144,9 +153,19 @@ fn with_a_daemon_the_panes_show_what_the_daemon_reports() {
             "whirl config check {key}={value}\n{stdout}"
         );
     }
+    let interval = check
+        .effective("schedule.interval_seconds")
+        .expect("an interval in the plan");
+    assert!(
+        stdout.contains(&format!(
+            "interval: {interval} (from the daemon's config check)"
+        )),
+        "whirl config check interval={interval}\n{stdout}"
+    );
 
-    // And every pane still refuses to be pressed.
-    assert_eq!(stdout.matches(EDITING_ARRIVES_IN_M2).count(), 3, "{stdout}");
+    // And the Sources pane is still read-only while the interval is not.
+    assert_eq!(stdout.matches(SOURCES_READ_ONLY).count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("interval: ").count(), 1, "{stdout}");
 }
 
 #[test]

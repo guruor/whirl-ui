@@ -14,19 +14,18 @@
 //! - **The app works with it closed.** With no window the app runs no egui pass
 //!   and draws nothing, and [`App::running`] is still true.
 //!
-//! There is no config write path in this module or anywhere in this crate: the
-//! window renders [`Settings`], which is a value built from the daemon's answers,
-//! and every control is drawn disabled. Keeping that out is not a matter of
-//! discipline here, it is a matter of nothing to call: `whirl-ui` depends on
-//! `whirlui-client` for talking to the daemon and reads no config file of its own,
-//! so the only file it can write is the screenshot a maintainer asks for on the
-//! command line.
+//! The window's one editor is the rotation interval, and the file it writes is
+//! [`crate::config_file`]'s: this module draws the field and the `Save` button,
+//! and the button calls [`Settings::save_interval`], which is the whole of the
+//! write path. Nothing here opens a socket to change a setting, so no part of an
+//! edit is a daemon verb, and the other file this crate can write is still the
+//! screenshot a maintainer asks for on the command line.
 
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::settings::{EDITING_ARRIVES_IN_M2, Settings};
+use crate::settings::{Control, Pane, Settings};
 
 /// The window's title, and the app name eframe registers.
 pub const WINDOW_TITLE: &str = "whirl settings";
@@ -103,7 +102,10 @@ impl App {
         self.settings = None;
     }
 
-    /// The panes the dialog is showing, or `None` while it is closed.
+    /// The panes the dialog is showing, or `None` while it is closed. The tests
+    /// read it; the window draws the same value through
+    /// [`App::ui`](eframe::App::ui).
+    #[cfg(test)]
     pub fn settings(&self) -> Option<&Settings> {
         self.settings.as_ref()
     }
@@ -187,7 +189,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let Some(settings) = self.settings() else {
+        let Some(settings) = self.settings.as_mut() else {
             return;
         };
         panes(ui, settings);
@@ -200,30 +202,75 @@ impl eframe::App for App {
 /// window, and this is what makes them the same: one body, drawn from one
 /// [`Settings`] value, so a pane cannot be in one window and missing from the
 /// other. The tray owns the viewport and this owns what is in it.
-pub(crate) fn panes(ui: &mut egui::Ui, settings: &Settings) {
+///
+/// One pane edits and two do not, and the drawing says so structurally rather
+/// than by leaving a button live that nothing answers: the Rotation pane draws
+/// [`Control::Interval`] as a text field with a `Save` button and the rest of its
+/// controls disabled, and every other pane draws all of its controls disabled.
+pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
     egui::Frame::central_panel(ui.style()).show(ui, |ui| {
         ui.heading(WINDOW_TITLE);
-        ui.label("the daemon's own answers, and nothing here edits");
+        ui.label(
+            "the daemon's own answers; the rotation interval is the one setting this window edits",
+        );
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for pane in settings.panes() {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.heading(pane.title);
-                for line in &pane.lines {
-                    ui.monospace(line);
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    for control in &pane.controls {
-                        // The field, not a hard `false`: M2 flips the value the
-                        // writer can act on, and the drawing follows it.
-                        ui.add_enabled(control.enabled, egui::Button::new(control.label));
-                    }
-                });
-                ui.label(EDITING_ARRIVES_IN_M2);
-            }
+            read_only_pane(ui, &settings.sources);
+            rotation_pane(ui, settings);
+            read_only_pane(ui, &settings.app);
         });
     });
+}
+
+/// A pane whose controls are all disabled, with the one line that says so.
+fn read_only_pane(ui: &mut egui::Ui, pane: &Pane) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.heading(pane.title);
+    for line in &pane.lines {
+        ui.monospace(line);
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        for control in &pane.controls {
+            if let Control::Planned(label) = control {
+                ui.add_enabled(false, egui::Button::new(*label));
+            }
+        }
+    });
+    ui.label(pane.footer.as_str());
+}
+
+/// The Rotation pane: the interval field, a `Save` button, the four controls that
+/// are still the shape of the surface, and the editor's own line.
+///
+/// `Save` writes the config file through [`Settings::save_interval`]; nothing it
+/// does reaches the daemon, which is why the pane says the change is pending
+/// until the next rotation rather than applied.
+fn rotation_pane(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.heading(settings.rotation.title);
+    for line in &settings.rotation.lines {
+        ui.monospace(line);
+    }
+    ui.add_space(4.0);
+    let mut save = false;
+    ui.horizontal(|ui| {
+        ui.label(Control::Interval.label());
+        ui.add(egui::TextEdit::singleline(&mut settings.interval.input).desired_width(96.0));
+        save = ui.add(egui::Button::new("Save")).clicked();
+    });
+    ui.horizontal(|ui| {
+        for control in &settings.rotation.controls {
+            if let Control::Planned(label) = control {
+                ui.add_enabled(false, egui::Button::new(*label));
+            }
+        }
+    });
+    if save {
+        settings.save_interval();
+    }
+    ui.label(settings.rotation.footer.as_str());
 }
 
 /// Run the window until it is closed or the screenshot is written.
@@ -301,18 +348,18 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_window_starts_nothing_and_can_edit_nothing() {
+    fn opening_the_window_starts_nothing_and_only_the_interval_edits() {
         // Opening takes panes that were read beforehand, so the call itself has
-        // nothing to start. The panes it takes cannot edit: every control is
-        // disabled, which is the value the drawing code reads.
+        // nothing to start. The window it takes has exactly one control that
+        // edits: the rotation interval, whose write path is `config_file`.
         let mut app = App::new(panes());
         app.close_settings();
         let before = app.running();
         app.open_settings(panes());
         assert_eq!(app.running(), before);
         assert_eq!(
-            app.settings().expect("an open window").enabled_controls(),
-            0
+            app.settings().expect("an open window").editable_controls(),
+            vec![("Rotation", crate::settings::Control::Interval)]
         );
     }
 
@@ -324,7 +371,7 @@ mod tests {
         app.open_settings(panes());
         assert_eq!(
             app.settings().expect("an open window").enabled_controls(),
-            0
+            1
         );
         assert!(app.running());
         app.close_settings();
