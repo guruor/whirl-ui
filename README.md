@@ -27,7 +27,7 @@ Install Rust with [rustup](https://rustup.rs). The toolchain is pinned in `rust-
 rustup installs the right compiler and components on first use; no other setup step is needed.
 
     cargo build --workspace                                  # build both crates
-    cargo run                                                # build and run the tray app
+    cargo run                                                # build and run the app
     cargo test --workspace                                   # run the test suite
     cargo fmt --all -- --check                               # the formatting gate
     cargo clippy --workspace --all-targets -- -D warnings    # the lint gate, warnings denied
@@ -35,6 +35,25 @@ rustup installs the right compiler and components on first use; no other setup s
 The app talks to a running daemon, and it will not start one for you: build and run `whirld` from the
 [whirl repository](https://github.com/guruor/whirl) first. With no daemon reachable it has nothing to
 show and says so.
+
+## Modes
+
+With no arguments the app opens the settings window. A window cannot be asserted by a test, so every
+question it answers is also answerable from a terminal, in the daemon's own words rather than in a
+format invented here:
+
+    cargo run -- --dump-status         # the daemon's status, key by key
+    cargo run -- --dump-sources        # each source's enabled state and the reason it has one
+    cargo run -- --dump-config-check   # the effective plan the daemon adopted
+    cargo run -- --dump-settings       # what the settings window shows, as text
+    cargo run -- --screenshot shot.png # run the window, write it to a PNG, and exit
+
+The dump modes exit 0 on success, 1 if the daemon refused, 2 if it is unreachable and 3 if the command
+line cannot work. `--dump-settings` prints its three panes with no daemon too, where each one renders
+the reason it has nothing to show: a pane that showed an empty list would be saying something untrue.
+
+`--screenshot` writes the window's own pixels rather than the screen's, so the file carries the window
+and nothing else that happened to be on the machine.
 
 If a version manager injects `RUSTUP_TOOLCHAIN`, the file above stops winning and a different compiler
 is used. Run cargo without that variable and with rustup first on `PATH` to restore the pin:

@@ -1,9 +1,13 @@
 # The single source of the toolchain version, and the reason it exists rather
 # than tracking `stable`: rustfmt output changes between releases, so an
 # unpinned toolchain turns formatting into a "wrong on your machine" review
-# topic. One version, everywhere, and a one-line change when it moves. The
-# daemon's workspace pins the same channel and the same components.
+# topic. One version, everywhere, and a one-line change when it moves.
+#
+# 1.95.0 rather than the 1.94.0 the protocol client alone needs: the app's window
+# is egui through eframe 0.36.2, whose own MSRV is 1.95, and `crates/whirl-ui`
+# declares that floor in its own manifest, because the client library does not
+# share it. The daemon's workspace is a different repository and pins its own.
 [toolchain]
-channel = "1.94.0"
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

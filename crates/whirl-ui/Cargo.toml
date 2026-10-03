@@ -3,8 +3,30 @@ name = "whirl-ui"
 description = "the whirl tray app: a lightweight menu bar frontend for the whirl daemon, macOS first"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# The workspace floor plus one step: the window is egui through eframe 0.36.2,
+# whose MSRV is 1.95. `rust-toolchain.toml` carries the same version, so the
+# pinned toolchain and this manifest agree with the dependency by construction.
+# `whirlui-client` keeps the workspace floor: nothing about talking the protocol
+# needs 1.95.
+rust-version = "1.95.0"
 repository.workspace = true
 
 [dependencies]
 whirlui-client = { workspace = true }
+# The window, and the renderer under it: egui through eframe, the pair whirl's
+# `docs/research/frontend-stack.md` chose by measurement over Tauri and over Swift
+# with AppKit. Default features are off, so the build needs no platform's
+# windowing headers and the three CI legs compile one crate rather than three
+# variants of one; `glow` is the GL renderer, which needs no compute pipeline to
+# draw a dialog, and `default_fonts` is the one place the text comes from.
+#
+# `x11` and `wayland` are the two backends winit has on Linux. They are not
+# optional there: with neither, winit's own `compile_error!("The platform you're
+# compiling for is not supported by winit")` stops the build, which is how the
+# ubuntu leg of CI first failed. On macOS they are inert, and the tray is
+# macOS-first, but this workspace's suite and lint run on all three platforms.
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+# One PNG, for `--screenshot`. The window is the one deliverable a test cannot
+# produce, so when a maintainer asks for a screenshot the app writes its own
+# pixels: the screen would carry whatever else the machine was showing.
+png = "0.17"
