@@ -8,3 +8,23 @@ repository.workspace = true
 
 [dependencies]
 whirlui-client = { workspace = true }
+
+# The menu bar item is macOS-only for now, and it is declared that way rather
+# than merely cfg-gated in the code: a target-specific dependency keeps the
+# toolkit out of the Linux and Windows builds entirely, so the three-platform
+# matrix builds the same workspace with no GTK or X11 development package
+# anywhere near it. docs/milestones.md M4 is where the other two platforms
+# arrive.
+#
+# The pair is `egui`/`eframe` 0.36 with `tray-icon` 0.26: `glow`, not `wgpu`,
+# because the tray has no 3D to draw and this app is measured on the glow build.
+# `winit` is here for one call that eframe does not surface: the macOS activation
+# policy (see `tray.rs`), which is what keeps the app out of the Dock. It is the
+# same 0.30 line eframe itself depends on, so it is one crate and not two.
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = [
+  "glow",
+  "default_fonts",
+] }
+tray-icon = { version = "0.26", default-features = false }
+winit = { version = "0.30", default-features = false }
