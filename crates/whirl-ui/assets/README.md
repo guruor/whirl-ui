@@ -16,10 +16,16 @@ their files may not be redistributed.
 The SVGs are paths in a 16x16 viewBox:
 
 - `mark.svg` is the whirl.
-- `mark-paused.svg` is the whirl beside a pause, for `paused=true`.
+- `mark-paused.svg` is the whirl paused, for `paused=true`: the whirl's outer
+  turn wound around a pause, drawn in the same 16x16 box.
 - `app-icon.svg` is the same whirl in white on a rounded square, on the macOS
   icon grid (an 824x824 square inset 100 px in a 1024 canvas, corner radius
   185.4), over a two-stop blue gradient.
+
+Both marks are one drawing in the same 16x16 box, and they ink the same pixels
+of it, so setting one or the other does not change the menu bar item's width.
+The suite holds that alongside the template rules below
+(`crates/whirl-ui/src/icon.rs`).
 
 ## The files
 

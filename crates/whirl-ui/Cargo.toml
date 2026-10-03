@@ -38,6 +38,20 @@ png = "0.17"
 # activation policy (see `tray.rs`), which is what keeps the app out of the
 # Dock. It is the same 0.30 line eframe itself depends on, so it is one crate
 # and not two.
+#
+# The `objc2` bindings are here for the item's accessible name. `tray-icon` sets
+# the tooltip but exposes no call for the accessibility label, and a status
+# button with no title has no accessible name at all, so the one setter the
+# crate does expose (`TrayIcon::ns_status_item`) is called through the same
+# bindings `tray-icon` is built on: the same versions, already in the graph, and
+# the accessibility protocol is the feature that carries the setter.
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.26", default-features = false }
 winit = { version = "0.30", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "NSAccessibilityProtocols",
+    "NSStatusBarButton",
+    "NSStatusItem",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }

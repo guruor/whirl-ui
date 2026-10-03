@@ -23,7 +23,10 @@
 //! The item's picture comes from [`crate::icon`], and it is the one thing here
 //! that changes without a menu rebuild: the two marks are template images, so
 //! macOS draws them from their alpha alone and inverts them for the menu bar's
-//! appearance, and the state decides which of the two is set.
+//! appearance, and the state decides which of the two is set. The mark is the
+//! item's whole label, which is why the item draws no title: what it is called
+//! is a tooltip and an accessible name (`ITEM_NAME`), and neither of those
+//! changes the item's width.
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -402,10 +405,12 @@ impl App {
         let rendered = menu::rows(&shared.view());
         let mark = icon::Mark::of(&shared.view());
         let tray = tray_icon::TrayIconBuilder::new()
-            // The picture is the mark; the word beside it stays, because a
-            // screenshot of the bar is read against it.
-            .with_title("whirl")
-            .with_tooltip("whirl: the wallpaper daemon's menu")
+            // The picture is the whole label: one mark, and no title beside it,
+            // so the item is as wide as its artwork. Two readers need a word
+            // that no pixel carries, and both are set below: the tooltip, for a
+            // mouse, and the accessible name, for anything reading the
+            // accessibility tree.
+            .with_tooltip(TOOLTIP)
             .with_menu(Box::new(build_menu(&rendered)))
             // Templated, so AppKit draws the mark from its alpha alone and
             // recolours it for a light or a dark menu bar. `tray-icon` 0.26.0
@@ -415,6 +420,7 @@ impl App {
             // `set_mark` below is its swap-time twin.
             .with_icon_templated(artwork(mark)?)
             .build()?;
+        set_accessible_name(&tray, ITEM_NAME);
 
         let (ui, clicks) = (Arc::clone(&shared), actions);
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -482,6 +488,44 @@ fn set_mark(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tray.set_icon_templated(Some(artwork(mark)?))?;
     Ok(())
+}
+
+// What the item is called, in the two places nothing is drawn.
+//
+// The word beside the mark was redundant once the mark was there, so the item
+// draws the mark alone. Two readers still need a name, and neither of them
+// reads a pixel. A mouse reads these through `tray-icon`: the tooltip is set on
+// the status item's button by the crate. The accessibility tree reads the
+// button's own label, which a button with no title leaves empty and which
+// `tray-icon` 0.26 has no call for; `set_accessible_name` below sets it.
+
+/// The item's accessible name: the app alone, which is what the removed title
+/// said.
+const ITEM_NAME: &str = "whirl";
+
+/// The item's tooltip: the app, and what the item is, for a mouse that has
+/// already found it.
+const TOOLTIP: &str = "whirl: the wallpaper daemon's menu";
+
+/// Name the item for the accessibility tree, which a status button with no
+/// title leaves nameless.
+///
+/// The name is set on the button the crate does expose
+/// (`TrayIcon::ns_status_item`). `tray-icon` is built on `objc2`, so this is the
+/// same bindings and the same versions rather than a second way in.
+fn set_accessible_name(tray: &TrayIcon, name: &str) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSAccessibility;
+    use objc2_foundation::NSString;
+
+    // The tray was built on this thread and a status item lives on no other:
+    // `tray-icon` requires the main thread to create one.
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(button) = tray.ns_status_item().and_then(|item| item.button(mtm)) {
+        button.setAccessibilityLabel(Some(&NSString::from_str(name)));
+    }
 }
 
 /// What a click asks for, before anything is done about it.
