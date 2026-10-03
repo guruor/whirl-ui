@@ -1,9 +1,13 @@
 # The single source of the toolchain version, and the reason it exists rather
 # than tracking `stable`: rustfmt output changes between releases, so an
 # unpinned toolchain turns formatting into a "wrong on your machine" review
-# topic. One version, everywhere, and a one-line change when it moves. The
-# daemon's workspace pins the same channel and the same components.
+# topic. One version, everywhere, and a one-line change when it moves.
+#
+# 1.95.0, not the 1.94.0 the daemon's workspace pins: the tray's toolkit
+# (`egui`/`eframe` 0.36) declares 1.95 as its floor, so this workspace cannot
+# build on 1.94 at all. The daemon's pin is its own and nothing here compiles
+# into it.
 [toolchain]
-channel = "1.94.0"
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
