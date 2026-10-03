@@ -18,6 +18,7 @@ version = "0.1.0"
 edition = "2024"
 # Edition 2024's floor, and the same floor the daemon's workspace declares.
 rust-version = "1.85.0"
+license = "MIT"
 repository = "https://github.com/guruor/whirl-ui"
 
 [workspace.dependencies]

@@ -9,6 +9,7 @@ edition.workspace = true
 # `whirlui-client` keeps the workspace floor: nothing about talking the protocol
 # needs 1.95.
 rust-version = "1.95.0"
+license.workspace = true
 repository.workspace = true
 
 [dependencies]

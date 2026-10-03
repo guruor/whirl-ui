@@ -84,6 +84,5 @@ can set a wallpaper on the platform at all.
 |---|---|
 | A collection preview, which would show a source's candidates before a rotation picks one. | It needs either a new daemon verb that returns the candidates or the app implementing a source itself, and section 8 item 4 forbids the second: a frontend that implements a source is a second implementation that drifts from the worker's. Deferred until whirl grows the verb, not dropped. |
 
-The repository's license is also open, and it is a decision rather than a milestone: with no `LICENSE`
-file all rights are reserved, so nobody can reuse a reference implementation whose reason to exist is
-being reused.
+The repository's license is a decision rather than a milestone: it is MIT, declared in the workspace
+manifest and in `LICENSE` at the root.
