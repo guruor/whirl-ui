@@ -14,11 +14,14 @@
 //! - **The app works with it closed.** With no window the app runs no egui pass
 //!   and draws nothing, and [`App::running`] is still true.
 //!
-//! What is drawn is [`crate::settings`]'s two choices: where the wallpapers come
+//! What is drawn is [`crate::settings`]' two choices: where the wallpapers come
 //! from and how often they change. This module holds no wording of its own that a
 //! person reads twice: every heading, button, line and refusal comes from a
 //! constant or a method on the value in `settings`, so the window on screen and
-//! the text `--dump-settings` prints cannot drift apart.
+//! the text `--dump-settings` prints cannot drift apart. The window's *shape* is
+//! [`crate::theme`]'s: the sidebar, the cards, the segmented control, the rows,
+//! the toggles and the footer are drawn in the reference's palette and metrics,
+//! and nothing here picks a colour or a size of its own.
 //!
 //! Nothing here opens a socket to change a setting, so no part of an edit is a
 //! daemon verb, and the other file this crate can write is still the screenshot a
@@ -26,16 +29,30 @@
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui;
+use eframe::egui::{
+    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Margin, RichText, Stroke,
+};
 
 use crate::settings::{
-    self, APP_DAEMON_NOTE, KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, ROTATION_LINE, ROTATION_TITLE,
-    SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
+    self, APP_DAEMON_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, Pane, ROTATION_LINE,
+    ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
 };
+use crate::theme;
 
 // The window's size and title are the settings module's, because the text dump
 // carries the title too and the two may not drift. Whoever opens the window
 // names them where they live, which is the settings module.
+
+/// The footer's word for a daemon that answered, and for one that did not.
+///
+/// The pane's own line is the daemon's sentence, in full, and it is drawn there;
+/// the footer is a status light and a word, which is what the reference's footer
+/// is. These two words are the footer's and appear nowhere the text dump reads.
+const CONNECTED: &str = "Connected";
+const NOT_CONNECTED: &str = "Not connected";
+
+/// The version the footer carries: this app's, the one the build put in it.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {
@@ -198,33 +215,304 @@ impl eframe::App for App {
     }
 }
 
-/// Draw the window: the two choices, and one line about the daemon.
+/// Draw the window: the app's mark and its three panes, on one rail.
 ///
 /// The menu bar item's `Settings…` row and the standalone window are the same
 /// window, and this is what makes them the same: one body, drawn from one
 /// [`Settings`] value, so a control cannot be in one window and missing from the
 /// other. The tray owns the viewport and this owns what is in it.
 ///
-/// While the folder chooser is open it is the whole body: the choice it is making
-/// is the only thing on screen, and a half-drawn list of folders under a
-/// half-drawn list of sources is how a person picks the wrong one.
+/// The shape is the reference's: a sidebar carrying the mark, the wordmark, the
+/// pane rows and a status footer, and a centre panel carrying the pane's title,
+/// the segmented control and the pane itself. The three panes are the three
+/// blocks the window has always drawn; naming them adds no pane, and the
+/// sidebar lists exactly them rather than the reference's future sections.
+///
+/// While the folder chooser is open it is the whole centre panel: the choice it
+/// is making is the only thing on screen, and a half-drawn list of folders under
+/// a half-drawn list of sources is how a person picks the wrong one.
 pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
-    egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-        ui.heading(WINDOW_TITLE);
-        ui.label(SUBTITLE);
-        egui::ScrollArea::vertical().show(ui, |ui| {
+    sidebar(ui, settings);
+    egui::CentralPanel::no_frame()
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::CANVAS)
+                .inner_margin(Margin::symmetric(28, 22)),
+        )
+        .show(ui, |ui| {
             if settings.picker.is_some() {
                 picker(ui, settings);
                 return;
             }
-            sources(ui, settings);
-            rotation(ui, settings);
-            ui.add_space(10.0);
-            ui.separator();
-            ui.label(settings.daemon.line());
-            ui.label(APP_DAEMON_NOTE);
+            header(ui, settings);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match settings.pane {
+                    Pane::Sources => sources(ui, settings),
+                    Pane::Rotation => rotation(ui, settings),
+                    Pane::App => app_pane(ui, settings),
+                });
+        });
+}
+
+/// The sidebar: the mark, the app's name, one row per pane, and the footer.
+///
+/// The footer is pinned to the bottom so the status light sits where the
+/// reference's does whether the window is tall or short.
+fn sidebar(ui: &mut egui::Ui, settings: &mut Settings) {
+    let frame = egui::Frame::NONE
+        .fill(theme::CANVAS)
+        .inner_margin(Margin::symmetric(14, 18));
+    egui::Panel::left("whirl-panes")
+        .exact_size(theme::SIDEBAR_WIDTH)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(frame)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::mark(ui, theme::MARK, theme::ACCENT);
+                ui.add_space(theme::SPACE_SM);
+                ui.label(
+                    RichText::new("whirl")
+                        .size(theme::TEXT_WORDMARK)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+            });
+            ui.add_space(theme::SPACE_LG);
+
+            let mut wanted = None;
+            for pane in Pane::ALL {
+                if nav_row(ui, pane, pane == settings.pane) {
+                    wanted = Some(pane);
+                }
+            }
+            if let Some(pane) = wanted {
+                settings.pane = pane;
+            }
+
+            ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                footer(ui, settings);
+            });
+        });
+}
+
+/// One row of the sidebar: the pane's name, lifted when it is the one on screen.
+fn nav_row(ui: &mut egui::Ui, pane: Pane, active: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), theme::CONTROL_HEIGHT + 6.0),
+        egui::Sense::click(),
+    );
+    let radius = CornerRadius::same(theme::RADIUS_ROW);
+    if active {
+        ui.painter().rect_filled(rect, radius, theme::ACCENT);
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, radius, theme::PANEL);
+    }
+    ui.painter().text(
+        rect.left_center() + egui::vec2(12.0, 0.0),
+        Align2::LEFT_CENTER,
+        pane.name(),
+        FontId::proportional(theme::TEXT_BODY),
+        if active {
+            Color32::WHITE
+        } else {
+            theme::TEXT_SECONDARY
+        },
+    );
+    response.clicked()
+}
+
+/// The footer: a status light, the connection state in a word, and the version.
+fn footer(ui: &mut egui::Ui, settings: &Settings) {
+    let connected = matches!(settings.daemon, Daemon::Running);
+    ui.add_space(theme::SPACE_MD);
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            rect.center(),
+            4.5,
+            if connected {
+                theme::STATE_OK
+            } else {
+                theme::STATE_BAD
+            },
+        );
+        ui.label(
+            RichText::new(if connected { CONNECTED } else { NOT_CONNECTED })
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(VERSION)
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_MUTED),
+            );
         });
     });
+}
+
+/// The pane's title, its subtitle, and the control that moves between panes.
+fn header(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.label(
+        RichText::new(WINDOW_TITLE)
+            .size(theme::TEXT_TITLE)
+            .strong()
+            .color(theme::TEXT_PRIMARY),
+    );
+    ui.label(
+        RichText::new(SUBTITLE)
+            .size(theme::TEXT_BODY)
+            .color(theme::TEXT_SECONDARY),
+    );
+    ui.add_space(theme::SPACE_MD);
+    segmented(ui, settings);
+    ui.add_space(theme::SPACE_MD);
+}
+
+/// The segmented control: one pill per pane, the selected one in the accent.
+fn segmented(ui: &mut egui::Ui, settings: &mut Settings) {
+    let current = settings.pane;
+    egui::Frame::NONE
+        .fill(theme::PANEL)
+        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for pane in Pane::ALL {
+                    let selected = pane == current;
+                    let label =
+                        RichText::new(pane.name())
+                            .size(theme::TEXT_BODY)
+                            .color(if selected {
+                                Color32::WHITE
+                            } else {
+                                theme::TEXT_SECONDARY
+                            });
+                    let pill = egui::Button::new(label)
+                        .corner_radius(CornerRadius::same(theme::RADIUS_SM))
+                        .fill(if selected {
+                            theme::ACCENT
+                        } else {
+                            theme::PANEL
+                        })
+                        .min_size(egui::vec2(104.0, theme::CONTROL_HEIGHT - 4.0));
+                    if ui.add(pill).clicked() {
+                        settings.pane = pane;
+                    }
+                }
+            });
+        });
+}
+
+/// One raised surface in the palette: the card everything else is drawn in.
+fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    surface(ui, theme::HAIRLINE, add)
+}
+
+/// A card whose outline is a colour rather than the hairline, for a state.
+fn surface<R>(ui: &mut egui::Ui, outline: Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::NONE
+        .fill(theme::PANEL)
+        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+        .stroke(Stroke::new(1.0, outline))
+        .inner_margin(theme::CARD_MARGIN)
+        .show(ui, add)
+        .inner
+}
+
+/// A card's heading.
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        RichText::new(title)
+            .size(theme::TEXT_SECTION)
+            .strong()
+            .color(theme::TEXT_PRIMARY),
+    );
+}
+
+/// A card's note, in the muted text the reference uses for one.
+fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_MUTED),
+    );
+}
+
+/// A line the window is reporting: a save, a refusal, the rotation in use.
+fn note(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .size(theme::TEXT_BODY)
+            .color(theme::TEXT_SECONDARY),
+    );
+}
+
+/// A state the person needs to read as a state: empty, or refused.
+fn banner(ui: &mut egui::Ui, text: &str, colour: Color32) {
+    egui::Frame::NONE
+        .fill(colour.gamma_multiply(0.22))
+        .corner_radius(CornerRadius::same(theme::RADIUS_SM))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .size(theme::TEXT_BODY)
+                    .color(theme::TEXT_PRIMARY),
+            );
+        });
+}
+
+/// The primary button: the accent fill the reference gives the one action that
+/// moves the window on.
+fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            RichText::new(label)
+                .size(theme::TEXT_BODY)
+                .color(Color32::WHITE),
+        )
+        .fill(theme::ACCENT)
+        .corner_radius(CornerRadius::same(theme::RADIUS_SM)),
+    )
+}
+
+/// A toggle switch: a track and a knob, on when `on` is set.
+///
+/// Drawn rather than taken from egui's checkbox because the reference's control
+/// is a switch, and a checkbox here would be a different control wearing the
+/// same value. It reports the change the way a click does, so the caller runs
+/// the same method it ran for the checkbox.
+fn toggle(ui: &mut egui::Ui, on: &mut bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(theme::TOGGLE_WIDTH, theme::TOGGLE_HEIGHT),
+        egui::Sense::click(),
+    );
+    let radius = theme::TOGGLE_HEIGHT / 2.0;
+    let corner = CornerRadius::same(radius as u8);
+    ui.painter().rect_filled(
+        rect,
+        corner,
+        if *on { theme::ACCENT } else { theme::HAIRLINE },
+    );
+    let knob = if *on {
+        rect.right() - radius
+    } else {
+        rect.left() + radius
+    };
+    ui.painter().circle_filled(
+        egui::pos2(knob, rect.center().y),
+        radius - 2.0,
+        Color32::WHITE,
+    );
+    if response.clicked() {
+        *on = !*on;
+        true
+    } else {
+        false
+    }
 }
 
 /// One click, recorded while the widgets are drawn and applied afterwards.
@@ -247,96 +535,73 @@ enum Click {
     PickerCancel,
 }
 
-/// The Sources section: one row per source, and the two ways to add one.
+/// The Sources pane: one card of rows, and the two ways to add one.
 fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.add_space(10.0);
-    ui.separator();
-    ui.heading(SOURCES_TITLE);
-    match &settings.sources.problem {
-        Some(reason) => {
-            ui.label(reason.as_str());
-        }
-        None if settings.sources.rows.is_empty() => {
-            ui.label(NO_SOURCES);
-        }
-        None => {}
-    }
-
     let mut clicks: Vec<Click> = Vec::new();
-    for row in &settings.sources.rows {
-        // The row's words give way to its buttons rather than pushing them off
-        // the edge: a folder is a path and a path can be long, and a button half
-        // outside the window is a button a person cannot press. The row's line
-        // loses its tail to an ellipsis here and nowhere else: `--dump-settings`
-        // prints the same line whole.
-        let (toggle, click) = egui::Sides::new().shrink_left().truncate().show(
-            ui,
-            |ui| {
-                // The checkbox is the one per-row control: a source can be left in
-                // the file and out of the rotation, and a window that hid that
-                // would be describing a rotation the daemon is not running.
-                let mut enabled = row.enabled;
-                if ui.checkbox(&mut enabled, "").changed() {
-                    return Some(Click::Toggle(row.id.clone(), enabled));
-                }
-                ui.label(row.line());
-                None
-            },
-            |ui| {
-                // This side is laid out right to left, so the widgets are added
-                // in reverse: the one written here last is drawn leftmost, which
-                // is where `--dump-settings` prints `[Change…] [Remove]` too. The
-                // two orders agree, so a person comparing the window with the
-                // dump is reading the same row.
-                if ui.button("Remove").clicked() {
-                    return Some(Click::Remove(row.id.clone()));
-                }
-                if matches!(row.kind, Kind::Wallhaven { .. }) && ui.button("Enter key…").clicked()
-                {
-                    return Some(Click::Key);
-                }
-                if row.changeable_folder().is_some() && ui.button("Change…").clicked() {
-                    return Some(Click::Change(row.id.clone()));
-                }
-                None
-            },
-        );
-        for click in [toggle, click].into_iter().flatten() {
-            clicks.push(click);
-        }
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Add a folder…").clicked() {
-            clicks.push(Click::AddFolder);
-        }
-        if ui.button("Add Wallhaven").clicked() {
-            clicks.push(Click::AddWallhaven);
-        }
-    });
-    ui.label(SOURCES_LINE);
-    if let Some(outcome) = &settings.sources.outcome {
-        ui.label(outcome.line());
-    }
 
-    if settings.key.open {
-        ui.horizontal(|ui| {
-            ui.label("Wallhaven key");
-            // Masked, and the value only ever goes to `save_key`, which hands it
-            // to the platform's store. Nothing reads it back, and nothing draws
-            // it.
-            ui.add(
-                egui::TextEdit::singleline(&mut settings.key.token)
-                    .password(true)
-                    .desired_width(240.0),
-            );
-            if ui.button("Save key").clicked() {
-                clicks.push(Click::SaveKey);
+    card(ui, |ui| {
+        section(ui, SOURCES_TITLE);
+        ui.add_space(theme::SPACE_SM);
+
+        match &settings.sources.problem {
+            // The file itself could not be read: an error state, drawn as one.
+            Some(reason) => {
+                banner(ui, reason.as_str(), theme::STATE_BAD);
+                ui.add_space(theme::SPACE_SM);
             }
-            if ui.button("Cancel").clicked() {
-                clicks.push(Click::CancelKey);
+            // A file with no sources yet: the reference's empty state.
+            None if settings.sources.rows.is_empty() => {
+                empty_state(ui, NO_SOURCES);
+                ui.add_space(theme::SPACE_SM);
+            }
+            None => {
+                for row in &settings.sources.rows {
+                    row_card(ui, row, &mut clicks);
+                    ui.add_space(theme::SPACE_SM);
+                }
+            }
+        }
+
+        ui.horizontal(|ui| {
+            if primary_button(ui, "Add a folder…").clicked() {
+                clicks.push(Click::AddFolder);
+            }
+            if ui.button("Add Wallhaven").clicked() {
+                clicks.push(Click::AddWallhaven);
             }
         });
-        ui.label(KEY_LINE);
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, SOURCES_LINE);
+        if let Some(outcome) = &settings.sources.outcome {
+            ui.add_space(theme::SPACE_XS);
+            note(ui, outcome.line().as_str());
+        }
+    });
+
+    if settings.key.open {
+        ui.add_space(theme::SPACE_MD);
+        card(ui, |ui| {
+            section(ui, "Wallhaven key");
+            ui.add_space(theme::SPACE_SM);
+            ui.horizontal(|ui| {
+                // Masked, and the value only ever goes to `save_key`, which hands
+                // it to the platform's store. Nothing reads it back, and nothing
+                // draws it.
+                ui.add(
+                    egui::TextEdit::singleline(&mut settings.key.token)
+                        .password(true)
+                        .desired_width(260.0),
+                );
+                if primary_button(ui, "Save key").clicked() {
+                    clicks.push(Click::SaveKey);
+                }
+                if ui.button("Cancel").clicked() {
+                    clicks.push(Click::CancelKey);
+                }
+            });
+            ui.add_space(theme::SPACE_XS);
+            caption(ui, KEY_LINE);
+        });
     }
 
     for click in clicks {
@@ -356,38 +621,150 @@ fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
     }
 }
 
-/// The Rotation section: how long each wallpaper stays, as a number and a unit.
-fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.add_space(10.0);
-    ui.separator();
-    ui.heading(ROTATION_TITLE);
-    let mut save = false;
-    ui.horizontal(|ui| {
-        ui.label("Every");
-        ui.add(egui::TextEdit::singleline(&mut settings.interval.value).desired_width(80.0));
-        egui::ComboBox::from_id_salt("rotation-unit")
-            .selected_text(settings.interval.unit.name())
-            .show_ui(ui, |ui| {
-                for unit in Unit::ALL {
-                    ui.selectable_value(&mut settings.interval.unit, unit, unit.name());
-                }
-            });
-        save = ui.button("Save").clicked();
+/// The empty Sources pane: the mark, and the one line that says nothing is here.
+fn empty_state(ui: &mut egui::Ui, text: &str) {
+    ui.vertical_centered(|ui| {
+        theme::mark(ui, 44.0, theme::HAIRLINE);
+        ui.add_space(theme::SPACE_SM);
+        ui.label(
+            RichText::new(text)
+                .size(theme::TEXT_BODY)
+                .color(theme::TEXT_SECONDARY),
+        );
     });
-    ui.label(ROTATION_LINE);
-    if let Some(outcome) = &settings.interval.outcome {
-        ui.label(outcome.line());
-    }
-    if let Some(now) = settings.interval.in_use_phrase() {
-        // Its own paragraph: the note above it already ends in `does not change
-        // yet`, and a reader who takes the two for one sentence reads the window
-        // as contradicting itself.
-        ui.add_space(4.0);
-        ui.label(now);
-    }
+}
+
+/// One source row: its toggle, its line, and the controls that act on it.
+fn row_card(ui: &mut egui::Ui, row: &crate::settings::Row, clicks: &mut Vec<Click>) {
+    egui::Frame::NONE
+        .fill(theme::CANVAS)
+        .corner_radius(CornerRadius::same(theme::RADIUS_SM))
+        .inner_margin(Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // The switch is the one per-row control: a source can be left in
+                // the file and out of the rotation, and a window that hid that
+                // would be describing a rotation the daemon is not running.
+                let mut enabled = row.enabled;
+                if toggle(ui, &mut enabled) {
+                    clicks.push(Click::Toggle(row.id.clone(), enabled));
+                }
+                ui.add_space(theme::SPACE_SM);
+                ui.label(
+                    RichText::new(row.line())
+                        .size(theme::TEXT_BODY)
+                        .color(theme::TEXT_PRIMARY),
+                );
+                // This side is laid out right to left, so the widgets are added
+                // in reverse: the one written here last is drawn leftmost, which
+                // is where `--dump-settings` prints `[Change…] [Remove]` too. The
+                // two orders agree, so a person comparing the window with the
+                // dump is reading the same row.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Remove").clicked() {
+                        clicks.push(Click::Remove(row.id.clone()));
+                    }
+                    if matches!(row.kind, Kind::Wallhaven { .. })
+                        && ui.button("Enter key…").clicked()
+                    {
+                        clicks.push(Click::Key);
+                    }
+                    if row.changeable_folder().is_some() && ui.button("Change…").clicked() {
+                        clicks.push(Click::Change(row.id.clone()));
+                    }
+                });
+            });
+        });
+}
+
+/// The Rotation pane: how long each wallpaper stays, as a number and a unit.
+fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
+    let mut save = false;
+    card(ui, |ui| {
+        section(ui, ROTATION_TITLE);
+        ui.add_space(theme::SPACE_SM);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Every")
+                    .size(theme::TEXT_BODY)
+                    .color(theme::TEXT_SECONDARY),
+            );
+            ui.add(egui::TextEdit::singleline(&mut settings.interval.value).desired_width(72.0));
+            egui::ComboBox::from_id_salt("rotation-unit")
+                .selected_text(settings.interval.unit.name())
+                .show_ui(ui, |ui| {
+                    for unit in Unit::ALL {
+                        ui.selectable_value(&mut settings.interval.unit, unit, unit.name());
+                    }
+                });
+            save = primary_button(ui, "Save").clicked();
+        });
+        ui.add_space(theme::SPACE_SM);
+        caption(ui, ROTATION_LINE);
+        if let Some(outcome) = &settings.interval.outcome {
+            ui.add_space(theme::SPACE_XS);
+            note(ui, outcome.line().as_str());
+        }
+        if let Some(now) = settings.interval.in_use_phrase() {
+            // Its own paragraph: the note above it already ends in `does not change
+            // yet`, and a reader who takes the two for one sentence reads the window
+            // as contradicting itself.
+            ui.add_space(theme::SPACE_XS);
+            note(ui, now.as_str());
+        }
+    });
     if save {
         settings.save_interval();
     }
+}
+
+/// The App pane: whether whirl answered, and where a change is written.
+///
+/// The daemon's own sentence is drawn in full from [`Daemon::line`], so this
+/// pane and `--dump-settings` say the same thing; the reference's disconnected
+/// state is what that sentence looks like when the socket did not answer, and it
+/// is drawn as an error card rather than a status light.
+fn app_pane(ui: &mut egui::Ui, settings: &Settings) {
+    let connected = matches!(settings.daemon, Daemon::Running);
+    let outline = if connected {
+        theme::HAIRLINE
+    } else {
+        theme::STATE_BAD
+    };
+    surface(ui, outline, |ui| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(
+                rect.center(),
+                5.0,
+                if connected {
+                    theme::STATE_OK
+                } else {
+                    theme::STATE_BAD
+                },
+            );
+            ui.label(
+                RichText::new(if connected { CONNECTED } else { NOT_CONNECTED })
+                    .size(theme::TEXT_SECTION)
+                    .color(if connected {
+                        theme::STATE_OK
+                    } else {
+                        theme::STATE_BAD
+                    }),
+            );
+        });
+        ui.add_space(theme::SPACE_SM);
+        if !connected {
+            banner(ui, settings.daemon.line().as_str(), theme::STATE_BAD);
+            ui.add_space(theme::SPACE_SM);
+        } else {
+            note(ui, settings.daemon.line().as_str());
+            ui.add_space(theme::SPACE_SM);
+        }
+        caption(ui, APP_DAEMON_NOTE);
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, &format!("version {VERSION}"));
+    });
 }
 
 /// The folder chooser: the folders inside one folder, and the two ways out.
@@ -399,46 +776,52 @@ fn picker(ui: &mut egui::Ui, settings: &mut Settings) {
     let Some(showing) = settings.picker.clone() else {
         return;
     };
-    ui.add_space(10.0);
-    ui.separator();
-    ui.heading(PICKER_TITLE);
-    ui.monospace(showing.directory.display().to_string());
-
     let mut clicks: Vec<Click> = Vec::new();
-    ui.horizontal(|ui| {
-        if ui.button("Up").clicked() {
-            clicks.push(Click::PickerUp);
-        }
-        if ui.button("Use this folder").clicked() {
-            clicks.push(Click::PickerChoose);
-        }
-        if ui.button("Cancel").clicked() {
-            clicks.push(Click::PickerCancel);
+    card(ui, |ui| {
+        section(ui, PICKER_TITLE);
+        ui.add_space(theme::SPACE_XS);
+        ui.label(
+            RichText::new(showing.directory.display().to_string())
+                .size(theme::TEXT_BODY)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(theme::SPACE_SM);
+        ui.horizontal(|ui| {
+            if ui.button("Up").clicked() {
+                clicks.push(Click::PickerUp);
+            }
+            if primary_button(ui, "Use this folder").clicked() {
+                clicks.push(Click::PickerChoose);
+            }
+            if ui.button("Cancel").clicked() {
+                clicks.push(Click::PickerCancel);
+            }
+        });
+        ui.add_space(theme::SPACE_SM);
+        match &showing.problem {
+            Some(reason) => {
+                banner(ui, reason.as_str(), theme::STATE_BAD);
+            }
+            None if showing.entries.is_empty() => {
+                caption(ui, "(no folders inside it)");
+            }
+            None => {
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for entry in &showing.entries {
+                            let name = entry
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if ui.button(name).clicked() {
+                                clicks.push(Click::PickerInto(entry.clone()));
+                            }
+                        }
+                    });
+            }
         }
     });
-    match &showing.problem {
-        Some(reason) => {
-            ui.label(reason.as_str());
-        }
-        None if showing.entries.is_empty() => {
-            ui.label("(no folders inside it)");
-        }
-        None => {
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .show(ui, |ui| {
-                    for entry in &showing.entries {
-                        let name = entry
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        if ui.button(name).clicked() {
-                            clicks.push(Click::PickerInto(entry.clone()));
-                        }
-                    }
-                });
-        }
-    }
 
     for click in clicks {
         match click {
@@ -475,7 +858,12 @@ pub fn run(settings: Settings, capture: Option<PathBuf>) -> Result<(), eframe::E
     eframe::run_native(
         WINDOW_TITLE,
         options,
-        Box::new(|_creation| Ok(Box::new(app))),
+        Box::new(|creation| {
+            // The palette is installed before the first frame is drawn, on the
+            // dark theme only; the light one is left exactly as egui ships it.
+            theme::apply(&creation.egui_ctx);
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -506,7 +894,7 @@ fn codec_error(error: png::EncodingError) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{Outcome, ROTATION_LINE};
+    use crate::settings::Outcome;
 
     fn window() -> Settings {
         Settings::unreachable(
@@ -619,5 +1007,20 @@ mod tests {
             "{:?}",
             settings.interval.outcome
         );
+    }
+
+    #[test]
+    fn the_three_panes_are_the_three_blocks_the_window_prints() {
+        // Naming the panes groups what the window already said; it adds none.
+        // Each pane's heading is a block of the text dump, so a pane that lost
+        // its heading would be a pane the dump does not carry.
+        let settings = window();
+        let text = settings.to_text();
+        let names: Vec<&str> = Pane::ALL.into_iter().map(Pane::name).collect();
+        assert_eq!(names, vec!["Sources", "Rotation", "App"]);
+        assert!(text.contains(SOURCES_TITLE), "{text}");
+        assert!(text.contains(ROTATION_TITLE), "{text}");
+        assert!(text.contains("whirl is not running"), "{text}");
+        assert_eq!(Pane::default(), Pane::Sources);
     }
 }

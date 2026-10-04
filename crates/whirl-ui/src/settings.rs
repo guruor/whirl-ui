@@ -50,6 +50,38 @@ pub const WINDOW_TITLE: &str = "whirl settings";
 /// reader can check.
 pub const WINDOW_SIZE: [f32; 2] = [860.0, 620.0];
 
+/// Which of the window's three panes is on screen.
+///
+/// The window draws one pane at a time, and this is which: the sidebar's rows
+/// and the segmented control move it, and a screenshot names it on the command
+/// line. It is a build-time-only grouping of what the window already said: the
+/// three panes are the three blocks [`Settings::to_text`] has printed since the
+/// window existed, so no new pane is added by naming them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pane {
+    /// Where the wallpapers come from.
+    #[default]
+    Sources,
+    /// How often they change.
+    Rotation,
+    /// Whether whirl answered, and what the window writes.
+    App,
+}
+
+impl Pane {
+    /// Every pane, in the order the sidebar and the segmented control show them.
+    pub const ALL: [Pane; 3] = [Pane::Sources, Pane::Rotation, Pane::App];
+
+    /// The pane's name on a control, and the word `--screenshot` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Pane::Sources => "Sources",
+            Pane::Rotation => "Rotation",
+            Pane::App => "App",
+        }
+    }
+}
+
 /// The one line under the title: what the window is for.
 pub const SUBTITLE: &str = "where your wallpapers come from, and how often they change";
 
@@ -102,6 +134,8 @@ const CHILD_LIMIT: usize = 200;
 pub struct Settings {
     /// The config file an edit writes, when one could be located.
     pub target: Option<Target>,
+    /// Which of the three panes is on screen.
+    pub pane: Pane,
     /// Whether whirl answered.
     pub daemon: Daemon,
     /// Where the wallpapers come from.
@@ -505,6 +539,7 @@ impl Settings {
                 Err(reason) => Daemon::NotRunning(reason.clone()),
             },
             target,
+            pane: Pane::default(),
             sources: Sources {
                 rows,
                 problem,

@@ -26,6 +26,7 @@ mod keychain;
 mod menu;
 mod settings;
 mod state;
+mod theme;
 #[cfg(target_os = "macos")]
 mod tray;
 
@@ -36,7 +37,7 @@ use std::process::ExitCode;
 
 use config_file::Direction;
 use dump::{EXIT_OK, EXIT_REFUSED, EXIT_USAGE, Mode, print_line};
-use settings::{Outcome, Settings, Unit};
+use settings::{Outcome, Pane, Settings, Unit};
 
 const USAGE: &str = "\
 whirl-ui: a menu bar frontend for the whirl wallpaper daemon
@@ -77,9 +78,12 @@ modes:
                                                     never its value
   --screenshot <path> [state]
                         run the window, write it to a PNG, and exit. The state
-                        is one of fresh (the default), chooser, key, rejected,
-                        words, and each one is put on through the same method
-                        the control it shows calls
+                        names the pane to photograph and any control to open on
+                        it. The panes are sources (the default), rotation and
+                        app; the control states are chooser and key (on the
+                        Sources pane) and rejected and words (on Rotation), and
+                        each one is put on through the same method the control
+                        it shows calls
   -h, --help            print this
 
 The dump modes talk to a running daemon: exit 0 on success, 1 if the daemon
@@ -126,7 +130,7 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
         let snap = match args.get(2) {
-            None => Snap::Fresh,
+            None => Snap::Sources,
             Some(name) => match Snap::parse(name) {
                 Some(snap) => snap,
                 None => {
@@ -156,16 +160,21 @@ fn main() -> ExitCode {
 ///
 /// The window is the one deliverable a test cannot open, so a screenshot is how
 /// it becomes evidence rather than a claim about it. These are the states worth a
-/// photograph, and each one is put on through the same method the control calls
-/// rather than by drawing something that resembles it.
+/// photograph: the three panes, and the controls that open on two of them. Each
+/// one is put on through the same method the control calls rather than by drawing
+/// something that resembles it.
 ///
-/// All four leave the config file as they found it: the chooser and the key field
-/// write nothing, and `rejected` writes nothing because the save it makes is one
-/// the daemon's own parser refuses before the file is touched.
+/// All of them leave the config file as they found it: the chooser and the key
+/// field write nothing, and `rejected` writes nothing because the save it makes
+/// is one the daemon's own parser refuses before the file is touched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Snap {
-    /// The window as it opens.
-    Fresh,
+    /// The Sources pane, as the window opens.
+    Sources,
+    /// The Rotation pane.
+    Rotation,
+    /// The App pane.
+    App,
     /// The folder chooser, open on where a new source would start.
     Chooser,
     /// The Wallhaven key field, open.
@@ -180,8 +189,10 @@ enum Snap {
 
 impl Snap {
     /// Every state, in the order the usage line lists them.
-    const ALL: [Snap; 5] = [
-        Snap::Fresh,
+    const ALL: [Snap; 7] = [
+        Snap::Sources,
+        Snap::Rotation,
+        Snap::App,
         Snap::Chooser,
         Snap::Key,
         Snap::Rejected,
@@ -189,12 +200,14 @@ impl Snap {
     ];
 
     /// The states as the usage line spells them.
-    const NAMES: &'static str = "fresh, chooser, key, rejected, words";
+    const NAMES: &'static str = "sources, rotation, app, chooser, key, rejected, words";
 
     /// The word a command line uses for this state.
     fn name(self) -> &'static str {
         match self {
-            Snap::Fresh => "fresh",
+            Snap::Sources => "sources",
+            Snap::Rotation => "rotation",
+            Snap::App => "app",
             Snap::Chooser => "chooser",
             Snap::Key => "key",
             Snap::Rejected => "rejected",
@@ -210,10 +223,19 @@ impl Snap {
     /// Put the window into this state, through the methods its controls call.
     fn apply(self, settings: &mut Settings) {
         match self {
-            Snap::Fresh => {}
-            Snap::Chooser => settings.open_picker(None),
-            Snap::Key => settings.key.open = true,
+            Snap::Sources => settings.pane = Pane::Sources,
+            Snap::Rotation => settings.pane = Pane::Rotation,
+            Snap::App => settings.pane = Pane::App,
+            Snap::Chooser => {
+                settings.pane = Pane::Sources;
+                settings.open_picker(None);
+            }
+            Snap::Key => {
+                settings.pane = Pane::Sources;
+                settings.key.open = true;
+            }
             Snap::Rejected => {
+                settings.pane = Pane::Rotation;
                 // Half a minute is below the floor whirl-core enforces, so the
                 // save is refused and the file is not written.
                 settings.interval.value = "0.5".to_string();
@@ -221,6 +243,7 @@ impl Snap {
                 settings.save_interval();
             }
             Snap::Words => {
+                settings.pane = Pane::Rotation;
                 settings.interval.value = "half an hour".to_string();
                 settings.interval.unit = Unit::Minutes;
                 settings.save_interval();
@@ -490,5 +513,34 @@ mod tests {
         }
         assert_eq!(Snap::parse("sideways"), None);
         assert_eq!(Snap::parse(""), None);
+    }
+
+    /// The app is a menu bar item with a dialog, not a windowed application: it
+    /// asks macOS for an accessory activation policy and never for a regular one,
+    /// so it takes no Dock tile (M1 criterion 5). A Dock tile is a different
+    /// product, and this is the assertion that a restyle did not introduce one.
+    ///
+    /// It reads the crate's own sources because the property has no runtime
+    /// surface a headless test can reach: the policy is decided once, by a winit
+    /// builder, before a window exists. The needle is assembled rather than
+    /// written out, so the assertion is not satisfied by its own text.
+    #[test]
+    fn the_app_still_asks_for_no_dock_tile() {
+        let regular = ["ActivationPolicy", "::", "Regular"].concat();
+        let tray = include_str!("tray.rs");
+        assert!(
+            tray.contains("ActivationPolicy::Accessory"),
+            "the app asks macOS for the accessory policy"
+        );
+        for (name, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("app.rs", include_str!("app.rs")),
+            ("tray.rs", tray),
+        ] {
+            assert!(
+                !source.contains(&regular),
+                "{name} asks for a regular activation policy, which is what gives the app a Dock tile"
+            );
+        }
     }
 }
