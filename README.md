@@ -60,6 +60,11 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
 
     env -u RUSTUP_TOOLCHAIN PATH="$HOME/.cargo/bin:$PATH" cargo test --workspace
 
+## Docs
+
+    docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
+    docs/design.md        the visual language, and what each element the design draws would cost in config
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
