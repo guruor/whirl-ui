@@ -40,6 +40,7 @@ pub const SERVICE: &str = "whirl-wallhaven";
 
 /// The account the item is created under. whirl looks the item up by service
 /// alone, so this only has to stay stable between the write and the update.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS write and by the tests.
 pub const ACCOUNT: &str = "whirl";
 
 /// The label a config file carries in `sources[i].api_key_ref`, and the one
@@ -57,6 +58,8 @@ pub enum KeychainError {
     // Constructed only by the non-macOS half.
     Unsupported(String),
     /// The store answered, and the answer was a failure.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    // Constructed only by the macOS half.
     Failed(String),
 }
 
@@ -108,6 +111,7 @@ pub fn metadata() -> Result<Vec<String>, KeychainError> {
 ///
 /// It is a function of the hex rather than of the token so that a test can hold
 /// the line without ever holding a token.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS write and by the tests.
 pub fn add_line(hex_token: &str) -> String {
     format!("add-generic-password -U -a {ACCOUNT} -s {SERVICE} -X {hex_token}\n")
 }
@@ -118,6 +122,7 @@ pub fn add_line(hex_token: &str) -> String {
 /// Neither `-w` nor `-g` is here, and neither may be added: they are the two
 /// flags that make `security` print the password, so a call built from these
 /// arguments cannot return it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS calls and by the tests.
 pub fn find_arguments() -> [&'static str; 3] {
     ["find-generic-password", "-s", SERVICE]
 }
