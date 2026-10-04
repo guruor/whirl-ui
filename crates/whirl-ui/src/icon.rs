@@ -36,7 +36,8 @@ use crate::state::View;
 
 /// The running mark: the whirl, at two pixels per point.
 const RUNNING_2X: &[u8] = include_bytes!("../assets/tray-iconTemplate@2x.png");
-/// The paused mark: the whirl beside a pause, at two pixels per point.
+/// The paused mark: the whirl's outer turn wound around a pause, at two pixels
+/// per point.
 const PAUSED_2X: &[u8] = include_bytes!("../assets/tray-icon-pausedTemplate@2x.png");
 
 // The 1x files ship beside the 2x ones and the tests below are what checks them;
@@ -53,7 +54,7 @@ const PAUSED_1X: &[u8] = include_bytes!("../assets/tray-icon-pausedTemplate.png"
 pub enum Mark {
     /// The schedule is live: the whirl.
     Running,
-    /// The daemon reports `paused=true`: the whirl beside a pause.
+    /// The daemon reports `paused=true`: the whirl paused.
     Paused,
 }
 
@@ -266,6 +267,87 @@ mod tests {
     fn the_two_marks_are_two_pictures() {
         for (running, paused) in [(RUNNING_1X, PAUSED_1X), (RUNNING_2X, PAUSED_2X)] {
             assert_ne!(running, paused);
+        }
+    }
+
+    /// The box a mark's ink lands in, in pixels of that mark's own canvas:
+    /// left, top, right, bottom, inclusive. Any ink counts, because any ink is
+    /// drawn: the shape is the alpha.
+    fn ink_box(art: &Artwork) -> (u32, u32, u32, u32) {
+        let mut boxed = (art.width, art.height, 0, 0);
+        for (i, pixel) in art.rgba.chunks_exact(4).enumerate() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let (x, y) = (i as u32 % art.width, i as u32 / art.width);
+            boxed = (
+                boxed.0.min(x),
+                boxed.1.min(y),
+                boxed.2.max(x),
+                boxed.3.max(y),
+            );
+        }
+        boxed
+    }
+
+    #[test]
+    fn the_two_marks_ink_the_same_box() {
+        // A state change may not resize the item. The item is as wide as its
+        // artwork (the tray sets a mark and no title), so the two marks have to
+        // land on the same pixels of the same canvas: a paused mark drawn in a
+        // wider or a narrower part of its own box would move the item's edges
+        // whenever the state changed. This is what the paused mark being "one
+        // drawing in the same 16x16 box" means, checked rather than assumed.
+        for (running, paused) in [(RUNNING_1X, PAUSED_1X), (RUNNING_2X, PAUSED_2X)] {
+            let running = Artwork::decode(running).expect("running");
+            let paused = Artwork::decode(paused).expect("paused");
+            assert_eq!(
+                ink_box(&running),
+                ink_box(&paused),
+                "the marks ink different boxes: left {:?}, right {:?}",
+                ink_box(&running),
+                ink_box(&paused)
+            );
+        }
+    }
+
+    #[test]
+    fn the_pause_is_two_bars_at_sixteen_points() {
+        // The item draws the mark at 16 points, so that is where the drawing is
+        // judged, not at the size the SVG happens to be viewed at. At 16 pixels
+        // a ring with its middle filled in is one blob: the pause has to stand
+        // there as two runs of ink with a clear column between them, or the
+        // state is not readable where it is actually read.
+        //
+        // The middle row crosses the ring at the canvas edges and the pause in
+        // between, so the middle half of the row is the pause and nothing else.
+        for (what, bytes) in [("paused 1x", PAUSED_1X), ("paused 2x", PAUSED_2X)] {
+            let art = Artwork::decode(bytes).unwrap_or_else(|error| panic!("{what}: {error}"));
+            let row = art.height / 2;
+            let middle: Vec<u8> = (art.width / 4..art.width * 3 / 4)
+                .map(|x| art.rgba[((row * art.width + x) * 4 + 3) as usize])
+                .collect();
+
+            let mut runs: Vec<Vec<usize>> = Vec::new();
+            for (x, alpha) in middle.iter().enumerate() {
+                if *alpha >= 128 {
+                    match runs.last_mut() {
+                        Some(run) if run.last() == Some(&(x - 1)) => run.push(x),
+                        _ => runs.push(vec![x]),
+                    }
+                }
+            }
+
+            assert_eq!(
+                runs.len(),
+                2,
+                "{what}: the middle row is not two bars: {runs:?}"
+            );
+            for run in &runs {
+                assert!(run.len() >= 2, "{what}: a bar is one pixel wide: {runs:?}");
+            }
+            let gap = runs[1][0] - runs[0][runs[0].len() - 1] - 1;
+            assert!(gap >= 1, "{what}: the two bars touch: {runs:?}");
         }
     }
 
