@@ -66,6 +66,12 @@ terminal, in the daemon's own words rather than in a format invented here:
     cargo run -- --dump-config-check   # the effective plan the daemon adopted
     cargo run -- --dump-settings       # what the settings window shows, as text
     cargo run -- --screenshot shot.png # run the window, write it to a PNG, and exit
+    cargo run -- --login-item status   # the app's own login item, as macOS reports it
+
+`--login-item` takes `status`, `register` or `unregister`, and every verb ends by printing the status, so
+a before and an after are the same two lines. It is about the *app's own bundle*, which is what macOS
+registers a login item for: from `Whirl.app` it registers that app, and from a bare binary it refuses and
+names the executable it looked at. `scripts/make-bundle.sh` is what writes `Whirl.app`.
 
 The dump modes exit 0 on success, 1 if the daemon refused, 2 if it is unreachable and 3 if the command
 line cannot work. `--dump-settings` prints its three panes with no daemon too, where each one renders
@@ -83,6 +89,11 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
 
     docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
     docs/design.md        the visual language, and what each element the design draws would cost in config
+    scripts/make-bundle.sh  Whirl.app, ad-hoc signed, and the archive a release carries
+
+The release bundle is built by hand and by CI on a tag, from the same script:
+`scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
+downloaded copy is quarantined and its first launch needs the step named beside the download.
 
 ## License
 
