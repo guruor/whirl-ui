@@ -2,7 +2,9 @@
 
 M1 to M4 for this repository, written 2026-10-02. M1 is the first slice: the protocol client, the tray
 item and the read-only settings window. M2 makes the settings window a writer, M3 is start at login,
-and M4 is Windows and Linux. What is deliberately out of scope is at the end.
+and M4 is Windows and Linux. The app's appearance is not a milestone: it is settled in
+`docs/design.md`, which also holds the reference's extra enhancements. What is deliberately out of
+scope is at the end.
 
 ## Why this file exists
 
@@ -77,6 +79,21 @@ can set a wallpaper on the platform at all.
 | 1 | whirl sets a wallpaper on the platform. | On a real Windows or Linux desktop, `whirl status` prints a `current:` image and the platform's own readback returns it. This is whirl's criterion, and this milestone does not start until whirl's own platform work closes. Artifact: whirl's release notes for the platform. |
 | 2 | The workspace builds and the app runs on the platform. | `cargo build --workspace --release` succeeds for `windows-latest` and `ubuntu-latest`, and on a real session `cargo run -- --menu-dump` prints the menu rows and the tray shows the daemon's status. Artifact: the CI legs' URLs, the `--menu-dump` output and a screenshot per platform. |
 | 3 | The macOS gate is gone. | `grep -rn 'cfg(target_os = "macos")' crates/whirl-ui/src` returns no line that excludes Windows or Linux from shipped behaviour; any gate that remains carries the reason it stays. Artifact: the grep output. |
+
+## Appearance
+
+The app's appearance is settled in `docs/design.md`, not here, and that file is authoritative for it:
+the visual language, and the palette sampled from the maintainer's own reference mockup with the
+command that produced each value recorded beside it. It was written 2026-10-04 from that reference, so
+a later reader can re-derive the numbers rather than read them by eye. The palette there is the
+contract for the dark theme, not a starting point to be improved on.
+
+## The reference's extra functionality
+
+`docs/design.md` also takes each element the reference draws and states what it needs today and what
+config change it would imply. Those items are parked outside the milestone sequence: no milestone in
+this file depends on them, and which of them are worth building is the maintainer's call. The list
+lives in `docs/design.md` alone and is not repeated here.
 
 ## Deliberately out of scope
 
