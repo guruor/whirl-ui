@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 
 use whirlui_client::protocol::parse_plan_record;
 
+use crate::about;
 use crate::config_file::{self, FileSource, INTERVAL_KEY, Target};
 use crate::keychain;
 
@@ -50,13 +51,12 @@ pub const WINDOW_TITLE: &str = "whirl settings";
 /// reader can check.
 pub const WINDOW_SIZE: [f32; 2] = [860.0, 620.0];
 
-/// Which of the window's three panes is on screen.
+/// Which of the window's four panes is on screen.
 ///
 /// The window draws one pane at a time, and this is which: the sidebar's rows
 /// move it, and a screenshot names it on the command line. It is a
-/// build-time-only grouping of what the window already said: the three panes
-/// are the three blocks [`Settings::to_text`] has printed since the window
-/// existed, so no new pane is added by naming them.
+/// build-time-only grouping of what the window says: each pane is one block
+/// [`Settings::to_text`] prints, so no new pane is added by naming them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pane {
     /// Where the wallpapers come from.
@@ -66,11 +66,13 @@ pub enum Pane {
     Rotation,
     /// Whether whirl answered, and what the window writes.
     App,
+    /// What this app is, which build, where its source is, and a newer release.
+    About,
 }
 
 impl Pane {
     /// Every pane, in the order the sidebar shows them.
-    pub const ALL: [Pane; 3] = [Pane::Sources, Pane::Rotation, Pane::App];
+    pub const ALL: [Pane; 4] = [Pane::Sources, Pane::Rotation, Pane::App, Pane::About];
 
     /// The pane's name on a control, and the word `--screenshot` takes.
     pub fn name(self) -> &'static str {
@@ -78,6 +80,7 @@ impl Pane {
             Pane::Sources => "Sources",
             Pane::Rotation => "Rotation",
             Pane::App => "App",
+            Pane::About => "About",
         }
     }
 }
@@ -113,6 +116,21 @@ pub const KEY_LINE: &str =
 pub const APP_DAEMON_NOTE: &str =
     "changes are written to the config file; whirl picks them up the next time it reads it";
 
+/// The About section's heading.
+pub const ABOUT_TITLE: &str = "About";
+
+/// What this app is, in the product's own words.
+pub const ABOUT_LINE: &str = "whirl-ui is a lightweight tray frontend for the whirl wallpaper daemon: it reads the daemon's status and edits the config file, and it never starts the daemon";
+
+/// The heading over the release check.
+pub const CHECK_TITLE: &str = "Is there a newer one?";
+
+/// The check's button.
+pub const CHECK_LABEL: &str = "Check for a newer release";
+
+/// The check's own line: what it does, and what it does not.
+pub const CHECK_LINE: &str = "asks GitHub once for this app's newest published release; it downloads nothing, sends nothing but the request, and repeats nothing on its own";
+
 /// The folder chooser's title.
 pub const PICKER_TITLE: &str = "Choose a folder";
 
@@ -134,10 +152,18 @@ const CHILD_LIMIT: usize = 200;
 pub struct Settings {
     /// The config file an edit writes, when one could be located.
     pub target: Option<Target>,
-    /// Which of the three panes is on screen.
+    /// Which of the four panes is on screen.
     pub pane: Pane,
     /// Whether whirl answered.
     pub daemon: Daemon,
+    /// The version the running bundle declares, when the app is inside one. The
+    /// About pane reads it beside the binary's own version.
+    pub bundle_version: Option<String>,
+    /// The daemon's own version, when it answered the `version` request.
+    pub daemon_version: Option<String>,
+    /// The last release check, and what it found. `None` until the button is
+    /// pressed: the app never checks on its own.
+    pub check: Option<about::Check>,
     /// Where the wallpapers come from.
     pub sources: Sources,
     /// How often they change.
@@ -476,15 +502,23 @@ pub struct Answers {
     pub connection: Result<(), String>,
     pub config_path: Result<Vec<String>, String>,
     pub config_check: Result<Vec<String>, String>,
+    /// The daemon's `version` answer: its own version, the protocol and the
+    /// platform. The About pane reads the daemon's version out of it.
+    pub version: Result<Vec<String>, String>,
 }
 
 impl Answers {
     /// The answers of a live conversation.
-    pub fn live(config_path: Vec<String>, config_check: Vec<String>) -> Answers {
+    pub fn live(
+        config_path: Vec<String>,
+        config_check: Vec<String>,
+        version: Vec<String>,
+    ) -> Answers {
         Answers {
             connection: Ok(()),
             config_path: Ok(config_path),
             config_check: Ok(config_check),
+            version: Ok(version),
         }
     }
 
@@ -494,6 +528,7 @@ impl Answers {
             connection: Err(reason.to_string()),
             config_path: Err(reason.to_string()),
             config_check: Err(reason.to_string()),
+            version: Err(reason.to_string()),
         }
     }
 }
@@ -540,6 +575,11 @@ impl Settings {
             },
             target,
             pane: Pane::default(),
+            bundle_version: about::bundle_version(),
+            daemon_version: daemon_version_of(answers),
+            // The window opens with no check made: it is the button's job, and
+            // nothing here reaches the network.
+            check: None,
             sources: Sources {
                 rows,
                 problem,
@@ -549,6 +589,55 @@ impl Settings {
             picker: None,
             key: KeyField::default(),
         }
+    }
+
+    /// The version the app is running as: the bundle's when it is inside one,
+    /// this binary's when it is not.
+    pub fn running_version(&self) -> String {
+        self.bundle_version
+            .clone()
+            .unwrap_or_else(|| about::binary_version().to_string())
+    }
+
+    /// The version, as the About pane states it.
+    ///
+    /// One line when the bundle and the binary agree, and two when they do not:
+    /// the disagreement is the diagnostic, and a build installed over another is
+    /// exactly that.
+    pub fn version_lines(&self) -> Vec<String> {
+        let binary = about::binary_version();
+        match &self.bundle_version {
+            Some(bundle) if bundle != binary => vec![
+                format!("version {bundle} (the app bundle)"),
+                format!("version {binary} (this binary)"),
+            ],
+            Some(bundle) => vec![format!("version {bundle}")],
+            None => vec![format!(
+                "version {binary} (this binary; not running from an app bundle)"
+            )],
+        }
+    }
+
+    /// The daemon's version and whether it answered, as the About pane states
+    /// it: the version only when there is one, and the reason never here, since
+    /// the App pane already carries it.
+    pub fn daemon_line(&self) -> String {
+        match (&self.daemon, &self.daemon_version) {
+            (Daemon::Running, Some(version)) => format!("the daemon: {version}, connected"),
+            (Daemon::Running, None) => {
+                "the daemon: connected, and it reported no version".to_string()
+            }
+            (Daemon::NotRunning(_), _) => "the daemon: not connected".to_string(),
+        }
+    }
+
+    /// Run the release check, on demand, and record what it found.
+    ///
+    /// This is the whole of the button: one call, made where the person pressed
+    /// it. It is synchronous on purpose, so no thread, timer or interval is
+    /// involved in asking, and nothing else in the app calls it.
+    pub fn check_release(&mut self) {
+        self.check = Some(about::check());
     }
 
     /// Write the rotation the field holds, and say what happened.
@@ -911,6 +1000,24 @@ impl Settings {
         out.push_str(&self.daemon.line());
         out.push('\n');
         out.push_str(APP_DAEMON_NOTE);
+
+        out.push('\n');
+        out.push('\n');
+        out.push_str(ABOUT_TITLE);
+        out.push('\n');
+        out.push_str(&format!("  {ABOUT_LINE}\n"));
+        for line in self.version_lines() {
+            out.push_str(&format!("  {line}\n"));
+        }
+        // The source is named as a sentence rather than as a `source:` record,
+        // so nothing here can be mistaken for one of the daemon's own lines.
+        out.push_str(&format!("  the source is {}\n", about::SOURCE_URL));
+        out.push_str(&format!("  {}\n", self.daemon_line()));
+        out.push_str(&format!("  [{CHECK_LABEL}]\n"));
+        out.push_str(&format!("  {CHECK_LINE}\n"));
+        if let Some(check) = &self.check {
+            out.push_str(&format!("  {}\n", check.line()));
+        }
         out
     }
 }
@@ -1031,6 +1138,21 @@ fn target_of(answers: &Answers) -> Option<Target> {
                 .find_map(|line| Target::from_config_path_line(line))
         })
         .or_else(config_file::Target::default_path)
+}
+
+/// The daemon's own version, from the `daemon_version:` line of its `version`
+/// answer, when it answered one.
+///
+/// The value is the daemon's, word for word, and the key name is not: the window
+/// draws a version, never a config or protocol key.
+fn daemon_version_of(answers: &Answers) -> Option<String> {
+    let lines = answers.version.as_ref().ok()?;
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix("daemon_version: "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .map(str::to_string)
 }
 
 /// The rotation the daemon is using now, from the `plan:` line of its
@@ -1333,6 +1455,7 @@ mod tests {
         let mut settings = Settings::from_answers(&Answers::live(
             vec![format!("config: {}", path.display())],
             Vec::new(),
+            Vec::new(),
         ));
         settings.open_picker(None);
         settings.picker_into(inside.clone());
@@ -1377,6 +1500,7 @@ mod tests {
 
         let mut settings = Settings::from_answers(&Answers::live(
             vec![format!("config: {}", path.display())],
+            Vec::new(),
             Vec::new(),
         ));
         settings.open_picker(Some("pictures".to_string()));
@@ -1465,21 +1589,25 @@ mod tests {
     fn the_controls_that_edit_are_the_ones_a_person_asked_for() {
         let (settings, _path) = window_from("controls", CONFIG);
         let text = settings.to_text();
-        // Two sections, in the order the window draws them, and the daemon's
-        // line last. Nothing else is on screen.
-        let order: Vec<usize> = [SOURCES_TITLE, ROTATION_TITLE]
+        // The two choices, the daemon's line, and the About block, in the order
+        // the sidebar lists them. Nothing else is on screen.
+        let order: Vec<usize> = [SOURCES_TITLE, ROTATION_TITLE, ABOUT_TITLE]
             .iter()
             .map(|title| text.find(title).unwrap_or_else(|| panic!("{title}")))
             .collect();
         assert!(order[0] < order[1], "{text}");
-        // The daemon's line is the last thing on screen, and says where a change
-        // actually lands.
-        assert!(text.trim_end().ends_with(APP_DAEMON_NOTE), "{text}");
+        assert!(order[1] < order[2], "{text}");
+        // The daemon's line says where a change lands, and the About block is
+        // the last thing on screen: the check has not been made yet, so the
+        // check's own line is last.
+        assert!(text.contains(APP_DAEMON_NOTE), "{text}");
+        assert!(text.trim_end().ends_with(CHECK_LINE), "{text}");
         assert!(
             text.find("whirl is running").expect("the daemon's line")
-                < text.find(APP_DAEMON_NOTE).expect("the note"),
+                < text.find(ABOUT_TITLE).expect("the About block"),
             "{text}"
         );
+        assert!(text.contains(CHECK_LABEL), "{text}");
         // No section dumps the rest of the file: the App pane's report is gone.
         for gone in [
             "socket: live",
@@ -1489,6 +1617,57 @@ mod tests {
         ] {
             assert!(!text.contains(gone), "{gone} in:\n{text}");
         }
+    }
+
+    /// The About block carries what the card asks a report to be able to paste:
+    /// the description, the version, the source, the daemon, and the check.
+    #[test]
+    fn the_about_block_carries_the_description_the_source_and_the_daemon() {
+        let (settings, _path) = window_from("about", CONFIG);
+        let text = settings.to_text();
+        assert!(text.contains(ABOUT_LINE), "{text}");
+        assert!(text.contains(about::SOURCE_URL), "{text}");
+        // The daemon answered `version`, so its own version is on screen, and
+        // the key name it arrived under is not.
+        assert!(
+            text.contains("the daemon: whirl 0.1.0, connected"),
+            "{text}"
+        );
+        assert!(!text.contains("daemon_version"), "{text}");
+        // The source is a sentence, not a `source:` record a reader could take
+        // for one of the daemon's.
+        assert!(!text.contains("source: "), "{text}");
+        // No check has been run, so no outcome is on screen.
+        assert!(settings.check.is_none(), "{:?}", settings.check);
+    }
+
+    /// The version is the bundle's, and the binary's own stands beside it only
+    /// when the two disagree: a build installed over another is exactly that
+    /// disagreement, and showing one of the two would hide it.
+    #[test]
+    fn the_version_is_the_bundles_and_the_binarys_own_when_they_differ() {
+        let (mut settings, _path) = window_from("version", CONFIG);
+        let binary = about::binary_version().to_string();
+
+        settings.bundle_version = None;
+        assert_eq!(
+            settings.version_lines(),
+            vec![format!(
+                "version {binary} (this binary; not running from an app bundle)"
+            )]
+        );
+
+        settings.bundle_version = Some(binary.clone());
+        assert_eq!(settings.version_lines(), vec![format!("version {binary}")]);
+
+        settings.bundle_version = Some("9.9.9".to_string());
+        assert_eq!(
+            settings.version_lines(),
+            vec![
+                "version 9.9.9 (the app bundle)".to_string(),
+                format!("version {binary} (this binary)"),
+            ]
+        );
     }
 
     #[test]
@@ -1511,6 +1690,11 @@ mod tests {
         Answers::live(
             vec![format!("config: {}", path.display())],
             vec!["plan: schedule.interval_seconds=1800 display.mode=all backend=noop".to_string()],
+            vec![
+                "daemon_version: whirl 0.1.0".to_string(),
+                "protocol: 2".to_string(),
+                "platform: macos".to_string(),
+            ],
         )
     }
 }

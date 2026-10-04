@@ -83,10 +83,21 @@ theme; it is not a starting point to be improved on.
 The palette is the contract; the window applying it is what this document is held to. The window is
 the reference's own shape: a sidebar carrying the mark, the wordmark, one row per pane and the status
 footer, and a centre panel carrying the pane's title and the pane itself
-(`crates/whirl-ui/src/app.rs`). Its content is still two choices and one line of state (where the
-wallpapers come from, how often they change, and whether whirl answered), in
-`crates/whirl-ui/src/settings.rs`. The next section classifies the elements the reference draws and
-the window does not.
+(`crates/whirl-ui/src/app.rs`). Its content is three panes of choices and state (where the wallpapers
+come from, how often they change, and whether whirl answered) plus an About pane, which says what the
+app is, which build is running, where its source is, whether the daemon is connected and whether a
+newer release is published, in `crates/whirl-ui/src/settings.rs` and `crates/whirl-ui/src/about.rs`.
+
+The About pane is the window's first element that is not a control over the daemon's state, and the one
+thing that would have made it dishonest is a version string typed into a source file. It is read from
+the app bundle's `Info.plist` instead, with the string the binary reports as the fallback, and both are
+shown when they disagree: a build installed over another leaves exactly that disagreement, and showing
+one of the two would hide it. The release check is drawn as a button and never as a schedule, because
+the app's obligation is to report and not to poll; a check that could not be made says so in the
+failure's own words rather than reading as the newest. That is the one request this app makes, and the
+one row in the table below that stops being "not this app's surface".
+
+The next section classifies the elements the reference draws and the window does not.
 
 ### The navigation, and the reserved top strip
 
@@ -119,7 +130,7 @@ open.
 | **Per-display** | **exists, at `crates/whirl-core/src/config.rs`** (`DisplayMode`, `DisplaySection::mode`, `display.mode = "all" \| "per-display"`). The honest part is the platform, not the key: `per-display` is accepted everywhere and resolved per platform, and it is refused on GNOME as impossible and KDE as out of scope, while on macOS it is unverified and runs as `all` with `display_mode_reason: unverified_platform` (`docs/architecture.md` 3.7; the reasons are `unverified_platform`, `impossible_on_this_desktop`, `out_of_scope_on_this_desktop`, `no_displays`, `docs/architecture.md` 2.10). Going further is **daemon feature: per-display rotation queues**. | A Displays pane is one radio and a refusal sentence on most desktops, which is worth showing precisely because it is honest about the fallback. The rotation model behind it is the expensive part. | none for the pane; a rotation-model change for real per-display |
 | **Pause while presenting or gaming** | **daemon feature: presentation/game detection**. Nothing in the daemon watches fullscreen or presentation state, and the config has no key it could read. Pause itself already exists (`pause` / `resume`, `docs/architecture.md` 2.5): what is missing is the trigger, not the action. | The trigger is the whole cost, and it is a state no protocol verb reports. Not yet. | none until the trigger exists; a key would only configure a detector |
 | **Appearance pane** | **not needed**. The config has no appearance key and the app is dark only, so a pane here would invent a setting rather than surface one. | Leave it out until there is a light theme, and let the theme come first. | none |
-| **Network pane** | **not needed**. There is no network key in the config, and the app fetches nothing: the daemon owns the sources and every piece of state, and the app reads the socket (`README.md`). A proxy setting would be a daemon key the app merely draws. | Not this app's surface. | none |
+| **Network pane** | **not needed**. There is no network key in the config. The app's own one request, the About pane's release check, is a button rather than a setting: it reads nothing from a key and writes nothing, so a pane here would still be drawing a daemon setting that does not exist. | Not this app's surface, and the release check is deliberately not a configurable one. | none |
 | **Advanced pane** | **not needed**. The file-only knobs that exist (`log_level`, `backend`, `cache.*`, `filters.*`, `crates/whirl-core/src/config.rs`) are governed by the window's own rule, that nothing which can only be set in the file is on screen (`crates/whirl-ui/src/settings.rs`). An Advanced pane is a change to that rule, not a missing key. | Leaving it out is a decision worth keeping. | none |
 
 ### Already possible from the protocol

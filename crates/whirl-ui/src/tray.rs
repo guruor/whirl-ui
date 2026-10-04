@@ -384,7 +384,7 @@ struct App {
     shared: Arc<Shared>,
     tray: Option<TrayIcon>,
     /// The window behind `Settings…`. It is `app`'s, so the row opens the one
-    /// settings window this repository has: the three panes `--dump-settings`
+    /// settings window this repository has: the four panes `--dump-settings`
     /// prints, and a close button that hides the window rather than ending the
     /// app.
     dialog: app::App,
