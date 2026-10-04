@@ -1,11 +1,12 @@
 //! The source edits and the token mode, run the way the window runs them, with no
 //! display.
 //!
-//! `whirl-ui --source …` calls the same `Settings` methods the Sources pane's
-//! buttons call, so this file asserts the round trip end to end: a source the
+//! `whirl-ui --source …` calls the same `Settings` methods the Sources section's
+//! controls call, so this file asserts the round trip end to end: a source the
 //! window adds lands in the file the daemon reads and whirl-core's own parser
-//! accepts the result, an edit the parser refuses changes nothing, and the label a
-//! Wallhaven source receives is a name and never a key.
+//! accepts the result, the row the terminal prints is the row the window draws,
+//! an edit the parser refuses changes nothing, and the label a Wallhaven source
+//! receives is a name and never a key.
 //!
 //! The store is not written here. `--source store-token` is exercised only in the
 //! ways it refuses before the store is reached, because a test that wrote a fake
@@ -62,20 +63,21 @@ fn stderr_of(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// The `source:` records a mode printed, in the order it printed them.
-fn records(stdout: &str) -> Vec<&str> {
+/// The row lines a mode printed, in the order the file holds them: everything
+/// that starts with the checkbox the window draws.
+fn rows(stdout: &str) -> Vec<&str> {
     stdout
         .lines()
-        .filter(|line| line.starts_with("source: "))
+        .filter(|line| line.starts_with("[x] ") || line.starts_with("[ ] "))
         .collect()
 }
 
-/// The first record a mode printed, or a panic showing what it did print.
-fn first_record(stdout: &str) -> &str {
-    records(stdout)
+/// The one row a mode printed, or a panic showing what it did print.
+fn one_row(stdout: &str) -> &str {
+    rows(stdout)
         .first()
         .copied()
-        .unwrap_or_else(|| panic!("no source record in: {stdout}"))
+        .unwrap_or_else(|| panic!("no source row in: {stdout}"))
 }
 
 /// Whether any run of 32 or more key characters appears in the text.
@@ -119,20 +121,21 @@ fn a_wallhaven_source_lands_with_the_label_and_the_parser_reads_it_back() {
         stdout.contains(&format!("config: {}", config.display())),
         "{stdout}"
     );
-    // The pane's own record for the source it just added, read back out of the
-    // file by the daemon's parser.
+    // The row the window draws for the source it just added. Whether the store
+    // holds a key is a fact about this machine, so the row is asserted up to the
+    // point where the two answers differ.
     assert!(
-        records(&stdout)
-            .first()
-            .is_some_and(|record| record.starts_with("source: space wallhaven weight=1 enabled=1")),
+        one_row(&stdout).starts_with("[x] Wallhaven, a remote collection: "),
         "{stdout}"
     );
+    assert!(stdout.contains("Wallhaven: saved"), "{stdout}");
 
     let landed = std::fs::read_to_string(&config).expect("the file");
     assert!(
         landed.contains(&format!("\"api_key_ref\": \"{LABEL}\"")),
         "{landed}"
     );
+    assert!(landed.contains("\"id\": \"space\""), "{landed}");
     // Everything that was not the sources array is still there.
     for keep in [
         "\"_comment_1\"",
@@ -149,30 +152,45 @@ fn a_wallhaven_source_lands_with_the_label_and_the_parser_reads_it_back() {
 }
 
 #[test]
+fn adding_wallhaven_with_no_id_derives_one_the_schema_accepts() {
+    // The window's own add: a person clicks and chooses nothing, so the id comes
+    // from the source kind, and `wallhaven` is a legal schema id.
+    let (directory, config) = scratch("derived-wallhaven");
+    let socket = directory.join("whirl.sock");
+    let output = source(&config, &socket, &["add-wallhaven"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let landed = std::fs::read_to_string(&config).expect("the file");
+    assert!(landed.contains("\"id\": \"wallhaven\""), "{landed}");
+
+    // A second one is numbered rather than refused.
+    let again = source(&config, &socket, &["add-wallhaven"]);
+    assert_eq!(again.status.code(), Some(0), "{}", stderr_of(&again));
+    let landed = std::fs::read_to_string(&config).expect("the file");
+    assert!(landed.contains("\"id\": \"wallhaven-2\""), "{landed}");
+}
+
+#[test]
 fn a_folder_source_lands_and_can_be_disabled_moved_and_removed() {
     let (directory, config) = scratch("folder");
     let socket = directory.join("whirl.sock");
 
     let added = source(&config, &socket, &["add", "pictures", "/tmp/walls"]);
     assert_eq!(added.status.code(), Some(0), "{}", stderr_of(&added));
-    assert!(
-        first_record(&stdout_of(&added)).starts_with("source: pictures local weight=1 enabled=1"),
-        "{}",
-        stdout_of(&added)
+    assert_eq!(
+        one_row(&stdout_of(&added)),
+        "[x] A folder on this Mac: /tmp/walls"
     );
 
     let second = source(&config, &socket, &["add", "holiday", "/tmp/holiday"]);
     assert_eq!(second.status.code(), Some(0), "{}", stderr_of(&second));
 
-    // Disabling writes weight 0, and the parser reads the source back as disabled
-    // rather than deleting it.
+    // Disabling clears the row's box and writes weight 0, and the parser reads
+    // the source back as disabled rather than deleting it.
     let disabled = source(&config, &socket, &["disable", "pictures"]);
     assert_eq!(disabled.status.code(), Some(0), "{}", stderr_of(&disabled));
-    assert!(
-        first_record(&stdout_of(&disabled))
-            .starts_with("source: pictures local weight=0 enabled=0"),
-        "{}",
-        stdout_of(&disabled)
+    assert_eq!(
+        one_row(&stdout_of(&disabled)),
+        "[ ] A folder on this Mac: /tmp/walls"
     );
     let landed = std::fs::read_to_string(&config).expect("the file");
     assert!(landed.contains("\"weight\": 0"), "{landed}");
@@ -180,20 +198,19 @@ fn a_folder_source_lands_and_can_be_disabled_moved_and_removed() {
 
     // Enabling it again restores the schema's default weight.
     let enabled = source(&config, &socket, &["enable", "pictures"]);
-    assert!(
-        first_record(&stdout_of(&enabled)).starts_with("source: pictures local weight=1 enabled=1"),
-        "{}",
-        stdout_of(&enabled)
+    assert_eq!(
+        one_row(&stdout_of(&enabled)),
+        "[x] A folder on this Mac: /tmp/walls"
     );
 
     // Moving it to the back changes the file's order with it.
     let moved = source(&config, &socket, &["move", "pictures", "down"]);
     assert_eq!(moved.status.code(), Some(0), "{}", stderr_of(&moved));
     let moved_stdout = stdout_of(&moved);
-    let order = records(&moved_stdout);
+    let order = rows(&moved_stdout);
     assert_eq!(order.len(), 2, "{order:?}");
-    assert!(order[0].starts_with("source: holiday"), "{order:?}");
-    assert!(order[1].starts_with("source: pictures"), "{order:?}");
+    assert!(order[0].ends_with("/tmp/holiday"), "{order:?}");
+    assert!(order[1].ends_with("/tmp/walls"), "{order:?}");
 
     // Removing it leaves the other source alone.
     let removed = source(&config, &socket, &["remove", "pictures"]);
@@ -211,6 +228,71 @@ fn a_folder_source_lands_and_can_be_disabled_moved_and_removed() {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
+}
+
+#[test]
+fn the_windows_own_add_derives_the_id_from_the_folder_name() {
+    // `add-folder` is the button a person clicks in the chooser; the id it
+    // derives is the file's word rather than the person's, and it has to be one
+    // the schema accepts: no slashes, nothing above 64 bytes.
+    let (directory, config) = scratch("derived-folder");
+    let socket = directory.join("whirl.sock");
+    let output = source(&config, &socket, &["add-folder", "/tmp/My Pictures"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert_eq!(
+        one_row(&stdout_of(&output)),
+        "[x] A folder on this Mac: /tmp/My Pictures"
+    );
+    let landed = std::fs::read_to_string(&config).expect("the file");
+    assert!(landed.contains("\"id\": \"My-Pictures\""), "{landed}");
+}
+
+#[test]
+fn changing_a_folder_points_the_source_at_the_chosen_one() {
+    // `set-folder` is the row's `Change…` control. A local source's `paths` is a
+    // list; the window offers one folder, so the list becomes that folder.
+    let (directory, config) = scratch("change-folder");
+    let socket = directory.join("whirl.sock");
+    let added = source(&config, &socket, &["add", "pictures", "/tmp/walls"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr_of(&added));
+
+    let changed = source(
+        &config,
+        &socket,
+        &["set-folder", "pictures", "/tmp/holiday"],
+    );
+    assert_eq!(changed.status.code(), Some(0), "{}", stderr_of(&changed));
+    assert_eq!(
+        one_row(&stdout_of(&changed)),
+        "[x] A folder on this Mac: /tmp/holiday"
+    );
+    let landed = std::fs::read_to_string(&config).expect("the file");
+    assert!(landed.contains("/tmp/holiday"), "{landed}");
+    assert!(!landed.contains("/tmp/walls"), "{landed}");
+
+    // Pointing a Wallhaven source at a folder is not an edit the window can
+    // explain, so it is refused rather than writing a `paths` key into it.
+    let wallhaven = source(&config, &socket, &["add-wallhaven", "space"]);
+    assert_eq!(
+        wallhaven.status.code(),
+        Some(0),
+        "{}",
+        stderr_of(&wallhaven)
+    );
+    let before = std::fs::read(&config).expect("the file");
+    let wrong_kind = source(&config, &socket, &["set-folder", "space", "/tmp/holiday"]);
+    assert_eq!(
+        wrong_kind.status.code(),
+        Some(1),
+        "{}",
+        stdout_of(&wrong_kind)
+    );
+    assert!(
+        stderr_of(&wrong_kind).contains("is not a folder source"),
+        "{}",
+        stderr_of(&wrong_kind)
+    );
+    assert_eq!(std::fs::read(&config).expect("the file"), before);
 }
 
 #[test]

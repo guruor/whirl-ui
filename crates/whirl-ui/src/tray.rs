@@ -45,6 +45,7 @@ use crate::dump::{self, EXIT_OK, EXIT_USAGE};
 use crate::icon;
 use crate::menu::{self, Action, Row, RowId};
 use crate::settings::Settings;
+use crate::settings::{WINDOW_SIZE, WINDOW_TITLE};
 use crate::state::View;
 
 /// How long to wait before trying an unreachable daemon again. The subscription
@@ -337,8 +338,8 @@ pub fn run() -> ExitCode {
             // the same title, the same size, the same panes. It is one window
             // rather than a smaller one of the tray's own, which is what keeps
             // the row from opening something that drifts from `--dump-settings`.
-            .with_title(app::WINDOW_TITLE)
-            .with_inner_size(app::WINDOW_SIZE)
+            .with_title(WINDOW_TITLE)
+            .with_inner_size(WINDOW_SIZE)
             // The menu is the product and the window is a dialog: it starts
             // hidden and only `Settings…` shows it.
             .with_visible(false),
@@ -359,7 +360,7 @@ pub fn run() -> ExitCode {
         })
     };
 
-    match eframe::run_native(app::WINDOW_TITLE, options, creator) {
+    match eframe::run_native(WINDOW_TITLE, options, creator) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(error) => {
             eprintln!("whirl-ui: the menu bar item could not start: {error}");

@@ -3,10 +3,10 @@
 //! The window is a dialog over the app, and the difference between the two is the
 //! whole of this module:
 //!
-//! - **Opening it starts nothing.** [`App::open_settings`] takes panes that were
+//! - **Opening it starts nothing.** [`App::open_settings`] takes a window that was
 //!   already read, so pressing the menu's `Settings…` row cannot start a daemon, a
-//!   worker or a rotation. `whirl status`, `whirl sources`, `whirl config path`
-//!   and `whirl config check` are reads, and they happen before the window exists.
+//!   worker or a rotation. The reads are `config path` and `config check` plus the
+//!   config file itself, and they happen before the window exists.
 //! - **Closing it does not quit the app.** The window's close button is answered
 //!   with [`egui::ViewportCommand::CancelClose`] and the viewport is hidden; the
 //!   app stays up, which is what the menu bar item needs: the window behind its
@@ -14,34 +14,35 @@
 //! - **The app works with it closed.** With no window the app runs no egui pass
 //!   and draws nothing, and [`App::running`] is still true.
 //!
-//! The window's editors are the rotation interval and the Sources pane, and the
-//! files they write are [`crate::config_file`]'s and [`crate::keychain`]'s: this
-//! module draws the fields and the buttons, and a click calls one of the
-//! [`Settings`] methods, which are the whole of the write paths. Nothing here
-//! opens a socket to change a setting, so no part of an edit is a daemon verb,
-//! and the other file this crate can write is still the screenshot a maintainer
-//! asks for on the command line.
+//! What is drawn is [`crate::settings`]'s two choices: where the wallpapers come
+//! from and how often they change. This module holds no wording of its own that a
+//! person reads twice: every heading, button, line and refusal comes from a
+//! constant or a method on the value in `settings`, so the window on screen and
+//! the text `--dump-settings` prints cannot drift apart.
+//!
+//! Nothing here opens a socket to change a setting, so no part of an edit is a
+//! daemon verb, and the other file this crate can write is still the screenshot a
+//! maintainer asks for on the command line.
 
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::settings::{Control, Pane, SOURCE_ROW_CONTROLS, Settings, SourceAction};
+use crate::settings::{
+    self, APP_DAEMON_NOTE, KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, ROTATION_LINE, ROTATION_TITLE,
+    SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
+};
 
-/// The window's title, and the app name eframe registers.
-pub const WINDOW_TITLE: &str = "whirl settings";
-
-/// How big the window opens. Fixed so that a screenshot of it has a size a
-/// reader can check.
-pub const WINDOW_SIZE: [f32; 2] = [980.0, 720.0];
+// The window's size and title are the settings module's, because the text dump
+// carries the title too and the two may not drift. Whoever opens the window
+// names them where they live, which is the settings module.
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {
     /// The dialog's content while the dialog is open. `None` is the window
     /// closed, which is a state the app sits in rather than an exit.
     settings: Option<Settings>,
-    /// Set by the menu bar item's `Quit` row, which is a later card. Nothing in
-    /// this milestone ends the app.
+    /// Set by the menu bar item's `Quit` row. Nothing else ends the app.
     quit: bool,
     /// Where a screenshot of the window goes, when one was asked for.
     capture: Option<PathBuf>,
@@ -65,7 +66,7 @@ impl App {
         }
     }
 
-    /// The app with its settings window open on these panes.
+    /// The app with its settings window open on this state.
     pub fn new(settings: Settings) -> App {
         App {
             settings: Some(settings),
@@ -84,12 +85,12 @@ impl App {
         self
     }
 
-    /// Show the dialog on these panes.
+    /// Show the dialog on this state.
     ///
-    /// The panes were read before the call, so this only records that they are on
+    /// The state was read before the call, so this only records that it is on
     /// screen. Opening starts nothing.
     ///
-    /// The menu bar item's `Settings…` row calls this: it reads the panes on its
+    /// The menu bar item's `Settings…` row calls this: it reads the state on its
     /// command thread and opens the window from the UI thread, so the reading is
     /// not done here and cannot block a draw. On the other two CI legs the tray
     /// is not compiled, which is what the `allow` covers.
@@ -103,7 +104,7 @@ impl App {
         self.settings = None;
     }
 
-    /// The panes the dialog is showing, or `None` while it is closed. The tests
+    /// The window the dialog is showing, or `None` while it is closed. The tests
     /// read it; the window draws the same value through
     /// [`App::ui`](eframe::App::ui).
     #[cfg(test)]
@@ -197,220 +198,273 @@ impl eframe::App for App {
     }
 }
 
-/// Draw the three panes: the whole body of the settings window.
+/// Draw the window: the two choices, and one line about the daemon.
 ///
 /// The menu bar item's `Settings…` row and the standalone window are the same
 /// window, and this is what makes them the same: one body, drawn from one
-/// [`Settings`] value, so a pane cannot be in one window and missing from the
+/// [`Settings`] value, so a control cannot be in one window and missing from the
 /// other. The tray owns the viewport and this owns what is in it.
 ///
-/// Two panes edit and one does not, and the drawing says so structurally rather
-/// than by leaving a button live that nothing answers: Sources is drawn by
-/// [`sources_pane`], Rotation's [`Control::Interval`] as a text field with a
-/// `Save` button, and the App pane draws all of its controls disabled.
+/// While the folder chooser is open it is the whole body: the choice it is making
+/// is the only thing on screen, and a half-drawn list of folders under a
+/// half-drawn list of sources is how a person picks the wrong one.
 pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
     egui::Frame::central_panel(ui.style()).show(ui, |ui| {
         ui.heading(WINDOW_TITLE);
-        ui.label(
-            "the daemon's own answers; the rotation interval and the sources are what this window edits",
-        );
+        ui.label(SUBTITLE);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            sources_pane(ui, settings);
-            rotation_pane(ui, settings);
-            read_only_pane(ui, &settings.app);
+            if settings.picker.is_some() {
+                picker(ui, settings);
+                return;
+            }
+            sources(ui, settings);
+            rotation(ui, settings);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.label(settings.daemon.line());
+            ui.label(APP_DAEMON_NOTE);
         });
     });
 }
 
-/// A pane whose controls are all disabled, with the one line that says so.
-fn read_only_pane(ui: &mut egui::Ui, pane: &Pane) {
-    ui.add_space(8.0);
-    ui.separator();
-    ui.heading(pane.title);
-    for line in &pane.lines {
-        ui.monospace(line);
-    }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        for control in &pane.controls {
-            if let Control::Planned(label) = control {
-                ui.add_enabled(false, egui::Button::new(*label));
-            }
-        }
-    });
-    ui.label(pane.footer.as_str());
-}
-
-/// One click on a Sources control, in the form the write path takes it.
-enum SourceClick {
+/// One click, recorded while the widgets are drawn and applied afterwards.
+///
+/// Recording rather than acting inside the drawing is what lets a button sit
+/// inside the loop over the rows it acts on, and it is why every button on screen
+/// has a method behind it: the `match` at the end of [`sources`] is exhaustive.
+enum Click {
+    Toggle(String, bool),
+    Change(String),
+    Key,
+    Remove(String),
     AddFolder,
     AddWallhaven,
-    StoreKey,
-    Enable(String),
-    Disable(String),
-    Remove(String),
-    MoveUp(String),
-    MoveDown(String),
+    SaveKey,
+    CancelKey,
+    PickerUp,
+    PickerInto(PathBuf),
+    PickerChoose,
+    PickerCancel,
 }
 
-impl SourceAction {
-    /// The click this action makes as a control above the rows, if it is one.
-    fn on_pane(self) -> Option<SourceClick> {
-        match self {
-            SourceAction::AddFolder => Some(SourceClick::AddFolder),
-            SourceAction::AddWallhaven => Some(SourceClick::AddWallhaven),
-            SourceAction::StoreKey => Some(SourceClick::StoreKey),
-            SourceAction::Enable
-            | SourceAction::Disable
-            | SourceAction::Remove
-            | SourceAction::MoveUp
-            | SourceAction::MoveDown => None,
-        }
-    }
-
-    /// The click this action makes in one source's row, if it is a row action.
-    fn on_source(self, id: String) -> Option<SourceClick> {
-        match self {
-            SourceAction::Enable => Some(SourceClick::Enable(id)),
-            SourceAction::Disable => Some(SourceClick::Disable(id)),
-            SourceAction::Remove => Some(SourceClick::Remove(id)),
-            SourceAction::MoveUp => Some(SourceClick::MoveUp(id)),
-            SourceAction::MoveDown => Some(SourceClick::MoveDown(id)),
-            SourceAction::AddFolder | SourceAction::AddWallhaven | SourceAction::StoreKey => None,
-        }
-    }
-}
-
-/// The Sources pane: the daemon's rows, or the file's own after an edit, the
-/// fields an added source is made of, the token field, and one set of buttons per
-/// source.
-///
-/// The click is recorded and applied after the widgets are drawn, so a button
-/// never has to hold a borrow of the state its action needs, and every button is
-/// drawn live because every button has a method behind it.
-fn sources_pane(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.add_space(8.0);
+/// The Sources section: one row per source, and the two ways to add one.
+fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.add_space(10.0);
     ui.separator();
-    ui.heading(settings.sources.title);
-    for line in &settings.sources.lines {
-        ui.monospace(line);
+    ui.heading(SOURCES_TITLE);
+    match &settings.sources.problem {
+        Some(reason) => {
+            ui.label(reason.as_str());
+        }
+        None if settings.sources.rows.is_empty() => {
+            ui.label(NO_SOURCES);
+        }
+        None => {}
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label("id");
-        ui.add(egui::TextEdit::singleline(&mut settings.editor.id).desired_width(120.0));
-        ui.label("folder");
-        ui.add(egui::TextEdit::singleline(&mut settings.editor.folder).desired_width(220.0));
-    });
-    ui.horizontal(|ui| {
-        ui.label("Wallhaven token");
-        // Masked, and the value only ever goes to `store_wallhaven_token`, which
-        // hands it to the platform's store. Nothing reads it back.
-        ui.add(
-            egui::TextEdit::singleline(&mut settings.editor.token)
-                .password(true)
-                .desired_width(220.0),
-        );
-    });
 
-    let mut clicked = None;
+    let mut clicks: Vec<Click> = Vec::new();
+    for row in &settings.sources.rows {
+        // The row's words give way to its buttons rather than pushing them off
+        // the edge: a folder is a path and a path can be long, and a button half
+        // outside the window is a button a person cannot press. The row's line
+        // loses its tail to an ellipsis here and nowhere else: `--dump-settings`
+        // prints the same line whole.
+        let (toggle, click) = egui::Sides::new().shrink_left().truncate().show(
+            ui,
+            |ui| {
+                // The checkbox is the one per-row control: a source can be left in
+                // the file and out of the rotation, and a window that hid that
+                // would be describing a rotation the daemon is not running.
+                let mut enabled = row.enabled;
+                if ui.checkbox(&mut enabled, "").changed() {
+                    return Some(Click::Toggle(row.id.clone(), enabled));
+                }
+                ui.label(row.line());
+                None
+            },
+            |ui| {
+                // This side is laid out right to left, so the widgets are added
+                // in reverse: the one written here last is drawn leftmost, which
+                // is where `--dump-settings` prints `[Change…] [Remove]` too. The
+                // two orders agree, so a person comparing the window with the
+                // dump is reading the same row.
+                if ui.button("Remove").clicked() {
+                    return Some(Click::Remove(row.id.clone()));
+                }
+                if matches!(row.kind, Kind::Wallhaven { .. }) && ui.button("Enter key…").clicked()
+                {
+                    return Some(Click::Key);
+                }
+                if row.changeable_folder().is_some() && ui.button("Change…").clicked() {
+                    return Some(Click::Change(row.id.clone()));
+                }
+                None
+            },
+        );
+        for click in [toggle, click].into_iter().flatten() {
+            clicks.push(click);
+        }
+    }
     ui.horizontal(|ui| {
-        for control in &settings.sources.controls {
-            if let Control::Source(action) = control
-                && ui.add(egui::Button::new(action.label())).clicked()
-            {
-                clicked = action.on_pane();
-            }
+        if ui.button("Add a folder…").clicked() {
+            clicks.push(Click::AddFolder);
+        }
+        if ui.button("Add Wallhaven").clicked() {
+            clicks.push(Click::AddWallhaven);
         }
     });
-    for id in settings.source_ids() {
+    ui.label(SOURCES_LINE);
+    if let Some(outcome) = &settings.sources.outcome {
+        ui.label(outcome.line());
+    }
+
+    if settings.key.open {
         ui.horizontal(|ui| {
-            ui.monospace(format!("id: {id}"));
-            for action in SOURCE_ROW_CONTROLS {
-                if ui.add(egui::Button::new(action.label())).clicked() {
-                    clicked = action.on_source(id.clone());
-                }
+            ui.label("Wallhaven key");
+            // Masked, and the value only ever goes to `save_key`, which hands it
+            // to the platform's store. Nothing reads it back, and nothing draws
+            // it.
+            ui.add(
+                egui::TextEdit::singleline(&mut settings.key.token)
+                    .password(true)
+                    .desired_width(240.0),
+            );
+            if ui.button("Save key").clicked() {
+                clicks.push(Click::SaveKey);
+            }
+            if ui.button("Cancel").clicked() {
+                clicks.push(Click::CancelKey);
             }
         });
+        ui.label(KEY_LINE);
     }
-    if let Some(click) = clicked {
-        apply_source_click(settings, click);
-    }
-    ui.label(settings.sources.footer.as_str());
-}
 
-/// Run the one [`Settings`] method a click asked for.
-///
-/// Each arm is one call, so "which control writes what" is read here rather than
-/// inferred from the drawing, and it is exhaustive: an action that gained no arm
-/// would be a control the window draws and nothing answers.
-fn apply_source_click(settings: &mut Settings, click: SourceClick) {
-    match click {
-        SourceClick::AddFolder => {
-            settings.add_local_source();
-        }
-        SourceClick::AddWallhaven => {
-            settings.add_wallhaven_source();
-        }
-        SourceClick::StoreKey => {
-            settings.store_wallhaven_token();
-        }
-        SourceClick::Enable(id) => {
-            settings.set_source_enabled(&id, true);
-        }
-        SourceClick::Disable(id) => {
-            settings.set_source_enabled(&id, false);
-        }
-        SourceClick::Remove(id) => {
-            settings.remove_source(&id);
-        }
-        SourceClick::MoveUp(id) => {
-            settings.move_source(&id, crate::config_file::Direction::Up);
-        }
-        SourceClick::MoveDown(id) => {
-            settings.move_source(&id, crate::config_file::Direction::Down);
+    for click in clicks {
+        match click {
+            Click::Toggle(id, enabled) => settings.set_source_enabled(&id, enabled),
+            Click::Change(id) => settings.open_picker(Some(id)),
+            Click::Key => settings.key.open = true,
+            Click::Remove(id) => settings.remove_source(&id),
+            Click::AddFolder => settings.open_picker(None),
+            Click::AddWallhaven => settings.add_wallhaven(),
+            Click::SaveKey => settings.save_key(),
+            Click::CancelKey => settings.key.open = false,
+            // The chooser's clicks are recorded by `picker`, which is the only
+            // place they can be made.
+            Click::PickerUp | Click::PickerInto(_) | Click::PickerChoose | Click::PickerCancel => {}
         }
     }
 }
 
-/// The Rotation pane: the interval field, a `Save` button, the four controls that
-/// are still the shape of the surface, and the editor's own line.
-///
-/// `Save` writes the config file through [`Settings::save_interval`]; nothing it
-/// does reaches the daemon, which is why the pane says the change is pending
-/// until the next rotation rather than applied.
-fn rotation_pane(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.add_space(8.0);
+/// The Rotation section: how long each wallpaper stays, as a number and a unit.
+fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.add_space(10.0);
     ui.separator();
-    ui.heading(settings.rotation.title);
-    for line in &settings.rotation.lines {
-        ui.monospace(line);
-    }
-    ui.add_space(4.0);
+    ui.heading(ROTATION_TITLE);
     let mut save = false;
     ui.horizontal(|ui| {
-        ui.label(Control::Interval.label());
-        ui.add(egui::TextEdit::singleline(&mut settings.interval.input).desired_width(96.0));
-        save = ui.add(egui::Button::new("Save")).clicked();
+        ui.label("Every");
+        ui.add(egui::TextEdit::singleline(&mut settings.interval.value).desired_width(80.0));
+        egui::ComboBox::from_id_salt("rotation-unit")
+            .selected_text(settings.interval.unit.name())
+            .show_ui(ui, |ui| {
+                for unit in Unit::ALL {
+                    ui.selectable_value(&mut settings.interval.unit, unit, unit.name());
+                }
+            });
+        save = ui.button("Save").clicked();
     });
-    ui.horizontal(|ui| {
-        for control in &settings.rotation.controls {
-            if let Control::Planned(label) = control {
-                ui.add_enabled(false, egui::Button::new(*label));
-            }
-        }
-    });
+    ui.label(ROTATION_LINE);
+    if let Some(outcome) = &settings.interval.outcome {
+        ui.label(outcome.line());
+    }
+    if let Some(now) = settings.interval.in_use_phrase() {
+        // Its own paragraph: the note above it already ends in `does not change
+        // yet`, and a reader who takes the two for one sentence reads the window
+        // as contradicting itself.
+        ui.add_space(4.0);
+        ui.label(now);
+    }
     if save {
         settings.save_interval();
     }
-    ui.label(settings.rotation.footer.as_str());
+}
+
+/// The folder chooser: the folders inside one folder, and the two ways out.
+///
+/// A folder is chosen from a list rather than typed, because a path typed into a
+/// window is a path the person has to know and spell, and the one thing this
+/// control is for is that they do not have to.
+fn picker(ui: &mut egui::Ui, settings: &mut Settings) {
+    let Some(showing) = settings.picker.clone() else {
+        return;
+    };
+    ui.add_space(10.0);
+    ui.separator();
+    ui.heading(PICKER_TITLE);
+    ui.monospace(showing.directory.display().to_string());
+
+    let mut clicks: Vec<Click> = Vec::new();
+    ui.horizontal(|ui| {
+        if ui.button("Up").clicked() {
+            clicks.push(Click::PickerUp);
+        }
+        if ui.button("Use this folder").clicked() {
+            clicks.push(Click::PickerChoose);
+        }
+        if ui.button("Cancel").clicked() {
+            clicks.push(Click::PickerCancel);
+        }
+    });
+    match &showing.problem {
+        Some(reason) => {
+            ui.label(reason.as_str());
+        }
+        None if showing.entries.is_empty() => {
+            ui.label("(no folders inside it)");
+        }
+        None => {
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for entry in &showing.entries {
+                        let name = entry
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        if ui.button(name).clicked() {
+                            clicks.push(Click::PickerInto(entry.clone()));
+                        }
+                    }
+                });
+        }
+    }
+
+    for click in clicks {
+        match click {
+            Click::PickerUp => settings.picker_up(),
+            Click::PickerInto(directory) => settings.picker_into(directory),
+            Click::PickerChoose => settings.picker_choose(),
+            Click::PickerCancel => settings.picker_cancel(),
+            // The sections' clicks are recorded by `sources`, which is not on
+            // screen while the chooser is.
+            Click::Toggle(..)
+            | Click::Change(..)
+            | Click::Key
+            | Click::Remove(..)
+            | Click::AddFolder
+            | Click::AddWallhaven
+            | Click::SaveKey
+            | Click::CancelKey => {}
+        }
+    }
 }
 
 /// Run the window until it is closed or the screenshot is written.
 pub fn run(settings: Settings, capture: Option<PathBuf>) -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(WINDOW_SIZE)
+            .with_inner_size(settings::WINDOW_SIZE)
             .with_title(WINDOW_TITLE),
         ..Default::default()
     };
@@ -452,8 +506,9 @@ fn codec_error(error: png::EncodingError) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{Outcome, ROTATION_LINE};
 
-    fn panes() -> Settings {
+    fn window() -> Settings {
         Settings::unreachable(
             "the daemon is not reachable: whirl.sock (absent): No such file or directory (os error 2)",
         )
@@ -461,7 +516,7 @@ mod tests {
 
     #[test]
     fn closing_the_settings_window_does_not_quit_the_app() {
-        let mut app = App::new(panes());
+        let mut app = App::new(window());
         assert!(app.running());
         assert!(app.settings().is_some());
         app.close_settings();
@@ -471,56 +526,42 @@ mod tests {
 
     #[test]
     fn the_app_works_with_the_window_closed_and_can_open_it_again() {
-        let mut app = App::new(panes());
+        let mut app = App::new(window());
         app.close_settings();
         // The app is up with nothing on screen.
         assert!(app.running());
-        app.open_settings(panes());
+        app.open_settings(window());
         assert!(app.settings().is_some());
         assert!(app.running());
     }
 
     #[test]
-    fn opening_the_window_starts_nothing_and_the_controls_that_edit_are_the_two_editors() {
-        // Opening takes panes that were read beforehand, so the call itself has
-        // nothing to start. What it opens has four controls that edit: the
-        // interval, whose write path is `config_file`, and the Sources pane's
-        // three, whose write paths are `config_file` and `keychain`.
-        let mut app = App::new(panes());
-        app.close_settings();
+    fn opening_the_window_starts_nothing() {
+        // Opening takes a window that was read beforehand, so the call itself has
+        // nothing to start.
+        let mut app = App::closed();
+        assert!(app.settings().is_none(), "the window starts closed");
         let before = app.running();
-        app.open_settings(panes());
+        app.open_settings(window());
         assert_eq!(app.running(), before);
-        assert_eq!(
-            app.settings().expect("an open window").editable_controls(),
-            vec![
-                ("Sources", Control::Source(SourceAction::AddFolder)),
-                ("Sources", Control::Source(SourceAction::AddWallhaven)),
-                ("Sources", Control::Source(SourceAction::StoreKey)),
-                ("Rotation", Control::Interval),
-            ]
-        );
+        assert!(app.settings().is_some());
     }
 
     #[test]
-    fn the_menu_bar_item_starts_on_a_closed_window_and_opens_it() {
+    fn the_window_the_menu_bar_item_opens_carries_the_two_choices() {
         let mut app = App::closed();
-        assert!(app.settings().is_none(), "the window starts closed");
-        assert!(app.running(), "a closed window is not a quit");
-        app.open_settings(panes());
-        assert_eq!(
-            app.settings().expect("an open window").enabled_controls(),
-            4
-        );
-        assert!(app.running());
-        app.close_settings();
-        assert!(app.settings().is_none());
-        assert!(app.running(), "the window closed and the app went on");
+        app.open_settings(window());
+        let text = app.settings().expect("an open window").to_text();
+        assert!(text.contains(SOURCES_TITLE), "{text}");
+        assert!(text.contains(ROTATION_TITLE), "{text}");
+        // A window with no daemon still says so, and still offers the controls.
+        assert!(text.contains("whirl is not running"), "{text}");
+        assert!(text.contains(ROTATION_LINE), "{text}");
     }
 
     #[test]
     fn the_close_button_is_the_windows_and_a_quit_and_a_capture_are_not() {
-        let mut app = App::new(panes());
+        let mut app = App::new(window());
         assert!(
             app.window_close(true),
             "an open window's close is the window's"
@@ -532,14 +573,14 @@ mod tests {
             "a hidden window has no close button"
         );
 
-        let mut quitting = App::new(panes());
+        let mut quitting = App::new(window());
         quitting.quit();
         assert!(
             !quitting.window_close(true),
             "the Quit row's close ends the app instead of hiding the window"
         );
 
-        let capturing = App::new(panes()).capturing(PathBuf::from("window.png"));
+        let capturing = App::new(window()).capturing(PathBuf::from("window.png"));
         assert!(
             !capturing.window_close(true),
             "a screenshot's close is the capture's own"
@@ -548,11 +589,35 @@ mod tests {
 
     #[test]
     fn only_a_quit_ends_the_app() {
-        let mut app = App::new(panes());
+        let mut app = App::new(window());
         assert!(app.running());
         app.close_settings();
         assert!(app.running());
         app.quit();
         assert!(!app.running());
+    }
+
+    #[test]
+    fn one_click_runs_one_method_and_the_sections_can_be_read_from_their_lines() {
+        // The drawing records a click and the `match` runs one method per arm;
+        // what a test can assert without a display is that the value the click
+        // produces is the value the lines report. The folder chooser is the one
+        // click whose method this reaches without a file on disk.
+        let mut settings = window();
+        settings.target = None;
+        settings.open_picker(None);
+        let text = settings.to_text();
+        assert!(text.contains(PICKER_TITLE), "{text}");
+        settings.picker_cancel();
+        assert!(!settings.to_text().contains(PICKER_TITLE));
+        // A save with no file to write is refused beside the control rather than
+        // panicking or silently doing nothing.
+        settings.interval.value = "30".to_string();
+        settings.save_interval();
+        assert!(
+            matches!(settings.interval.outcome, Some(Outcome::Refused { .. })),
+            "{:?}",
+            settings.interval.outcome
+        );
     }
 }

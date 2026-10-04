@@ -40,7 +40,7 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use whirlui_client::whirl_core::config::{Config, ConfigWarning};
+use whirlui_client::whirl_core::config::{Config, ConfigWarning, SourceConfig};
 
 /// The config key this milestone's write path owns, by the dotted path
 /// `config check` reports it under (whirl's `docs/architecture.md` 2.6).
@@ -298,6 +298,12 @@ pub struct FileSource {
     /// the file leaves it null, which whirl reads as "look it up in the
     /// platform's own store".
     pub key_ref: Option<String>,
+    /// A `local` source's `paths`: the folders it reads. Empty for the other
+    /// kinds. This is the one field the settings window shows that the daemon's
+    /// `source:` record does not carry, and the file is where it comes from.
+    pub paths: Vec<String>,
+    /// Whether the source is in the rotation (`weight > 0`).
+    pub enabled: bool,
 }
 
 /// A source edit that landed, and the sources the file now holds.
@@ -391,6 +397,35 @@ pub fn set_source_enabled(
     })
 }
 
+/// Point the source named `id` at `folder`, and at nothing else.
+///
+/// A `local` source holds a list of folders. The window offers one folder per
+/// source, so this replaces the list rather than appending to it: a source that
+/// held several is a source the window describes as several, and changing it
+/// means pointing it at one. The refusal for a source of another kind is this
+/// module's own, because a `paths` key on a Wallhaven entry is not an edit the
+/// window can explain.
+pub fn set_source_folder(
+    path: &Path,
+    id: &str,
+    folder: &str,
+) -> Result<SourcesWritten, WriteError> {
+    edit_sources(path, |sources| {
+        let index = index_of(sources, id)?;
+        let source = source_object_mut(&mut sources[index])?;
+        if source.get("kind").and_then(|kind| kind.as_str()) != Some("local") {
+            return Err(WriteError::Refused(format!(
+                "{SOURCES_KEY}: the source named {id:?} is not a folder source"
+            )));
+        }
+        source.insert(
+            "paths".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::from(folder)]),
+        );
+        Ok(())
+    })
+}
+
 /// Move the source named `id` one place, and do nothing at the edge.
 pub fn move_source(
     path: &Path,
@@ -443,28 +478,58 @@ pub fn set_wallhaven_key_ref(path: &Path, label: &str) -> Result<SourcesWritten,
 /// this, so what a person sees is what the parser found in the file rather than
 /// what the window asked for.
 pub fn read_sources(path: &Path) -> Result<SourcesWritten, WriteError> {
+    let state = read_file(path)?;
+    Ok(SourcesWritten {
+        path: path.to_path_buf(),
+        sources: state.sources,
+        warnings: state.warnings,
+    })
+}
+
+/// What the config file says, as the settings window needs it: the sources and
+/// the rotation interval, both through the daemon's own parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileState {
+    /// The file's own sources, in the file's own order.
+    pub sources: Vec<FileSource>,
+    /// The rotation the file asks for.
+    pub interval_seconds: u64,
+    /// The parser's warnings about the file, in its own words.
+    pub warnings: Vec<String>,
+}
+
+/// Read the whole of what the window shows out of the file.
+///
+/// One read for the two settings the window owns, because the window opens on
+/// the file it edits: a second read could catch the file between two writes.
+pub fn read_file(path: &Path) -> Result<FileState, WriteError> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| WriteError::Io(format!("{}: {error}", path.display())))?;
     let loaded = Config::parse(&text).map_err(|error| WriteError::Refused(error.to_string()))?;
-    let sources = loaded
-        .config
-        .sources
-        .iter()
-        .map(|source| FileSource {
-            id: source.id.clone(),
-            record: source.record(None).line(),
-            kind: source.kind.as_str().to_string(),
-            key_ref: source
-                .wallhaven
-                .as_ref()
-                .and_then(|wallhaven| wallhaven.api_key_ref.clone()),
-        })
-        .collect();
-    Ok(SourcesWritten {
-        path: path.to_path_buf(),
-        sources,
+    Ok(FileState {
+        sources: loaded.config.sources.iter().map(file_source).collect(),
+        interval_seconds: loaded.config.schedule.interval_seconds,
         warnings: warnings(&loaded.warnings),
     })
+}
+
+/// One source, as the file itself says it.
+fn file_source(source: &SourceConfig) -> FileSource {
+    FileSource {
+        id: source.id.clone(),
+        record: source.record(None).line(),
+        kind: source.kind.as_str().to_string(),
+        key_ref: source
+            .wallhaven
+            .as_ref()
+            .and_then(|wallhaven| wallhaven.api_key_ref.clone()),
+        paths: source
+            .local
+            .as_ref()
+            .map(|local| local.paths.clone())
+            .unwrap_or_default(),
+        enabled: source.weight > 0,
+    }
 }
 
 /// Read the file, hand its `sources` array to `edit`, validate the exact bytes
