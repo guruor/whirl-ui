@@ -87,8 +87,9 @@ impl Client {
             .ok_or_else(|| ClientError::MalformedGreeting { line: line.clone() })?;
 
         // 2. Refuse a version this client does not know (2.4, section 8 item 1).
-        // This is the check the card asks for by name: it is a behaviour, and
-        // `refuses_an_unknown_protocol_version` fails when it is removed.
+        // This is the check `docs/milestones.md` M1 criterion 2 names: it is a
+        // behaviour, and `refuses_an_unknown_protocol_version` fails when it is
+        // removed.
         if !crate::supports(greeting.protocol) {
             return Err(ClientError::UnknownProtocol {
                 server: greeting.protocol.to_string(),

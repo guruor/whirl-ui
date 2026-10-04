@@ -6,10 +6,11 @@
 //! The tray renders this list and nothing else, which is what makes the printed
 //! rows evidence rather than a second description of the menu.
 //!
-//! The order is the card's order, and it is the order in the field: the current
-//! image on a line of its own, the two movements, the one pause row whose label
-//! follows `paused`, the pin, a separator, and the two rows that leave the
-//! rotation alone.
+//! The order is the one `--menu-dump` prints and `docs/milestones.md` M1
+//! criterion 3 pins, and it is the order in the field: the current image on a
+//! line of its own, the two movements, the one pause row whose label follows
+//! `paused`, the pin, a separator, and the two rows that leave the rotation
+//! alone.
 
 use crate::state::View;
 

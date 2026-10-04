@@ -67,9 +67,10 @@ fn configured_socket() -> Option<PathBuf> {
 /// The connected socket type.
 ///
 /// The transport of docs/architecture.md 2.1 is a unix domain socket on macOS and
-/// Linux, and a named pipe on Windows. The pipe is a later card; until it lands
-/// the Windows type exists, compiles and refuses, so that one `cfg` here is the
-/// whole of the platform difference and the rest of the crate is portable.
+/// Linux, and a named pipe on Windows. The pipe is M4's (`docs/milestones.md`,
+/// Windows and Linux); until it lands the Windows type exists, compiles and
+/// refuses, so that one `cfg` here is the whole of the platform difference and
+/// the rest of the crate is portable.
 #[cfg(unix)]
 pub use std::os::unix::net::UnixStream as Stream;
 
