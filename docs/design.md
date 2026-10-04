@@ -17,9 +17,9 @@ One dark settings-window mockup, supplied 2026-10-04 as `photo_2026-10-04_13-08-
 JPEG). It is not committed here: it is the maintainer's own file, named here only so that the
 sampling below can be run again against the same input.
 
-It draws a window with a navigation sidebar, a segmented control, cards with hairline dividers, list
-rows, toggles, a status footer carrying the connection state and the version, and a blue swirl
-wordmark.
+It draws a window with a navigation sidebar, a segmented control in the centre panel's top strip,
+cards with hairline dividers, list rows, toggles, a status footer carrying the connection state and
+the version, and a blue swirl wordmark.
 
 ### The palette, and where the numbers come from
 
@@ -80,10 +80,28 @@ theme; it is not a starting point to be improved on.
 
 ### Where this stands in the code
 
-The palette is the contract; the window applying it is what this document is held to. As it stands
-the window is two choices and one line of state (where the wallpapers come from, how often they
-change, and whether whirl answered), in `crates/whirl-ui/src/settings.rs`; the sidebar of named panes
-the reference draws is not part of it yet, which is what the next section is about.
+The palette is the contract; the window applying it is what this document is held to. The window is
+the reference's own shape: a sidebar carrying the mark, the wordmark, one row per pane and the status
+footer, and a centre panel carrying the pane's title and the pane itself
+(`crates/whirl-ui/src/app.rs`). Its content is still two choices and one line of state (where the
+wallpapers come from, how often they change, and whether whirl answered), in
+`crates/whirl-ui/src/settings.rs`. The next section classifies the elements the reference draws and
+the window does not.
+
+### The navigation, and the reserved top strip
+
+The reference draws two surfaces that could carry the pane list. Only one does.
+
+| surface | what it is for | what it needs today |
+|---|---|---|
+| the sidebar | **the pane list**: the mark, the wordmark, one row per pane, and the footer | **exists, at `crates/whirl-ui/src/app.rs`** (`sidebar`) |
+| the centre panel's top strip | **a pane's own sub-views**, when a pane grows them | **not needed**: no pane has a sub-view, so nothing is drawn there |
+
+The pane list lives in the sidebar and nowhere else. A segmented control over the panes in the top
+strip is a second control for the same destinations, which is the defect this note exists to prevent.
+The strip is kept clear for a pane's own sub-views (tabs within Sources, modes within Rotation), which
+is where a pane that grows one will draw them. That strip is a pane's *inside* navigation: it moves
+between a pane's own views and never between panes.
 
 ## 2. Future enhancements
 
