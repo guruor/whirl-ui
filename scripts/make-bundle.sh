@@ -6,7 +6,7 @@
 #
 # Writes, under dist/ (which is build output and not committed):
 #
-#   Whirl.app                    the app, an agent app with no Dock icon, ad-hoc signed
+#   Whirl.app                    the app, an agent app with no Dock icon, signed locally
 #   Whirl-<version>.zip          the archive, with Whirl.app at its root
 #   Whirl-<version>.zip.sha256   the checksum published beside the archive
 #
@@ -16,10 +16,17 @@
 # from, because an artifact whose version is a guess is worse than one that admits
 # what it is.
 #
-# The signature is ad-hoc (`codesign --sign -`): no Developer ID and no
-# notarization, which is a deliberate choice and not an oversight. So a copy that
-# was downloaded is quarantined, and its first launch needs the documented step;
-# `spctl -a -vv Whirl.app` refuses it, which is expected rather than a failure.
+# The signature is local: no Developer ID and no notarization, which is a
+# deliberate choice and not an oversight. `scripts/make-signing-identity.sh`
+# creates a self-signed certificate in the login keychain once, and this script
+# signs with it, so successive builds carry the same signing authority and the
+# identity macOS remembers a launch approval against does not change on every
+# rebuild. Where no such identity exists -- a release runner, a fresh checkout --
+# the signature is ad-hoc, and the script says which of the two it used rather
+# than leaving it to be discovered from `codesign -dv`. Either way a copy that
+# was downloaded is quarantined and its first launch needs the documented step,
+# and `spctl -a -vv Whirl.app` refuses it: an ad-hoc or self-signed app is not
+# notarized, and that is expected rather than a failure.
 #
 # Nothing here needs sudo, a password, an interactive authorization or a network.
 # codesign, ditto and shasum all ship with macOS; cargo is the pinned toolchain.
@@ -128,11 +135,26 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# The signature, and the whole of it: `-` is an ad-hoc identity, so this says the
-# bundle has not been modified since it was built and says nothing about who built
-# it. The identifier is not passed here; codesign reads it from the Info.plist
-# above, which is what the login item is registered under.
-codesign --force --sign - "$app"
+# The signature. The identity is the one `scripts/make-signing-identity.sh`
+# creates in the login keychain. That keychain is on the keychain search list,
+# and that is what lets codesign see the identity: `--keychain <path>` for a
+# keychain that is not on the list does not work (measured on macOS 26.7), which
+# is why the identity lives in the login keychain rather than one of its own.
+# The identifier is not passed here; codesign reads it from the Info.plist
+# above, which is what the login item is registered under. `-` is the fallback
+# for a machine with no identity on it, and the two are told apart in the output
+# below.
+signature=-
+signed_with="an ad-hoc signature"
+if command -v security >/dev/null 2>&1; then
+    keychain=$(security default-keychain -d user 2>/dev/null | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
+    if [ -n "$keychain" ] &&
+        security find-identity -p codesigning "$keychain" 2>/dev/null | grep -q '"Whirl Local Signing"'; then
+        signature="Whirl Local Signing"
+        signed_with="the local signing identity ($keychain)"
+    fi
+fi
+codesign --force --sign "$signature" "$app"
 codesign --verify --strict "$app"
 
 # ---- the archive -----------------------------------------------------------
@@ -152,7 +174,8 @@ if [ "$local_build" = yes ]; then
     echo "make-bundle: HEAD is not on a v* tag and no version was given, so this build says it is $version"
 fi
 echo "make-bundle: $app"
-echo "make-bundle: $app/Contents/MacOS/whirl-ui is the app; it is an agent app (LSUIElement) and it is ad-hoc signed"
+echo "make-bundle: $app/Contents/MacOS/whirl-ui is the app; it is an agent app (LSUIElement) and it is signed with $signed_with"
 echo "make-bundle: $archive"
 cat "$archive.sha256"
+echo "make-bundle: spctl -a -vv refuses this bundle, because a self-signed or ad-hoc app is not notarized"
 echo "make-bundle: a downloaded copy of the archive is quarantined; its first launch needs the documented step"
