@@ -1,0 +1,82 @@
+name: release
+
+# A tag is the release. Pushing `v*` builds the bundle from that tag and attaches
+# the archive and its checksum to a GitHub release for it, so what a friend
+# downloads is built from the tag they can read.
+#
+# The job runs on macOS because the app is macOS: the tray and the login item are
+# macOS-only, and Whirl.app is a macOS bundle (the other platforms are
+# docs/milestones.md M4, which waits on whirl). The version comes from the tag that
+# triggered the run, and `scripts/make-bundle.sh` takes it from there.
+#
+# The signature in the archive is ad-hoc, with no notarization, which is a
+# deliberate choice: the release notes say so, and the install notes carry the
+# first-launch step a quarantined copy needs. Nothing here implies a Developer ID.
+
+on:
+  push:
+    tags: ['v*']
+  # The same artifact, on a tag that does not exist yet, for a run that has to be
+  # repeatable before the release is cut.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: the version to build and release, as the tag spells it (v0.1.0)
+        required: true
+
+permissions:
+  # The release and its assets are written with the workflow's own token: no
+  # secret is stored for this and none is needed.
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle:
+    name: bundle (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain and its components
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The version, from the tag
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          TYPED: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            version="$TAG"
+          else
+            version="$TYPED"
+          fi
+          # The version names a filename and a release, so it is checked rather
+          # than trusted: a tag that is not a version is a run that stops here.
+          case "$version" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "release: $version is not a version tag (v<major>.<minor>.<patch>)" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build the bundle and the archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/make-bundle.sh "$VERSION"
+
+      - name: Publish the archive and its checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "whirl-ui $VERSION" \
+            --generate-notes \
+            --notes "Whirl.app carries an ad-hoc signature and is not notarized, so a copy that was downloaded is quarantined: the first launch is a right-click Open, or the step the install notes name. The checksum beside the archive proves the download is the file this job built; it proves nothing about who built it." \
+            dist/*.zip dist/*.zip.sha256
