@@ -105,9 +105,10 @@ remove any sensitive data": the caveat that a manual path needs because the app 
 log line might contain.
 
 **OBS Studio** offers both halves: "Help menu > Log Files > Upload Last Log File" (sent to OBS's
-server, next pattern) and "Show Log Files", which "will open the directory on your PC where OBS logs
-are stored. Copy the file ... to a location convenient for you"
-(<https://obsproject.com/forum/threads/please-post-a-log-with-your-issue-heres-how.23074/>).
+server, next pattern) and "Show Log Files", which opens a window listing the log files for the tester
+to pick the one with the right timestamp and attach
+(<https://obsproject.com/forum/threads/please-post-a-log-with-your-issue-heres-how.23074/>;
+<https://obsproject.com/forum/threads/audio-isnt-being-recorded.76025/>).
 **Signal Desktop** has the same fallback for when the app will not start: "ZIP/Compress the logs
 folder ... Share the logs folder or a specific log from within the logs folder as an attachment to
 support@signal.org" (<https://support.signal.org/hc/en-us/articles/360007318591-Debug-Logs-and-Crash-Reports>).
@@ -278,10 +279,16 @@ The rule, then the mechanism that enforces it rather than trusting the intention
 Four parts, each of which a test can hold:
 
 1. **An allow-list by construction.** The report is a Rust struct with named fields, serialized by
-   `serde`. A value with no field has nowhere to go; there is no free-form string the report copies a
-   socket line into. This is already this repository's idiom: `Refusal` carries only `code` and
-   `message`, and `Socket` deliberately reports "the socket file's *name* and its mode ... nothing
-   here prints a directory" (`crates/whirlui-client/src/error.rs`). The report composes the same way.
+   `serde`. A value with no field has nowhere to go. Two of those fields are free text, though:
+   `socket_exchange` carries the socket's `ERR` code and message, and `app_log_tail` carries the
+   app's own stderr lines. They are the fields a self-sufficient report has to have, and so the
+   fields a planted secret would have to be caught in; the `Refusal { code, message }` the socket
+   returns carries a free-text `message` for the same reason. The struct is the boundary, and it is
+   the redactor (part 2) plus the planted-secret test (part 3) that hold it, not the struct alone.
+   This is still this repository's idiom: `Refusal` carries only `code` and a `message`, and `Socket`
+   deliberately reports "the socket file's *name* and its mode ... nothing here prints a directory"
+   (`crates/whirlui-client/src/error.rs`). The report composes the same way, passing every socket line
+   and every stderr line through the redactor.
 2. **A `Redacted` newtype for every path.** A path can only enter the report as
    `Redacted::of(path)`, which stores the leaf name and a short `sha256` prefix and never the full
    path. Local sources get this for free where the protocol already hashes them: whirl 2.5 makes a
@@ -289,9 +296,10 @@ Four parts, each of which a test can hold:
    only door a path can use.
 3. **A planted-secret test.** `report::tests::a_planted_secret_never_reaches_the_report` plants a
    known fake token in every string a report can draw from (the config's `api_key_ref`, the keychain
-   metadata, an `ERR` message, a history path, a source `paths` entry, and a fake `$HOME`), builds
-   the report, and asserts the token, the planted home path and the planted picture file name do not
-   appear anywhere in the serialized bytes. It is the direct descendant of two tests already in the
+   metadata, the `ERR` message in `socket_exchange`, a refusal message on a stderr line in
+   `app_log_tail`, a history path, a source `paths` entry, and a fake `$HOME`), builds the report,
+   and asserts the token, the planted home path and the planted picture file name do not appear
+   anywhere in the serialized bytes. It is the direct descendant of two tests already in the
    tree: `the_write_line_carries_the_token_only_as_hex_on_stdin` and
    `an_attribute_dump_loses_any_line_that_carries_a_password` (`crates/whirl-ui/src/keychain.rs`),
    which hold the same property for the write path and the store dump.
