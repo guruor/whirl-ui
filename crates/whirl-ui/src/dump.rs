@@ -8,9 +8,10 @@
 //! drifts.
 //!
 //! `--dump-settings` is the same idea applied to the whole window: it prints the
-//! three panes [`Settings`] holds, which is exactly what the window draws. What a
-//! test asserts from that text is a fact about the window, and it asserts it with
-//! no display, which is the only way this repository can check a window at all.
+//! two choices [`Settings`] holds, in the same words the window draws them,
+//! because they are the same words. What a test asserts from that text is a fact
+//! about the window, and it asserts it with no display, which is the only way
+//! this repository can check a window at all.
 //!
 //! Exit codes are whirl's own (docs/architecture.md section 8 item 7), because a
 //! caller that branches on them is the caller section 8 has in mind: 0 success,
@@ -203,36 +204,33 @@ fn one(client: &mut Client, request: &Request) -> ExitCode {
     }
 }
 
-/// The four answers the settings window is built from, and the exit code of the
+/// The answers the settings window is built from, and the exit code of the
 /// first request that failed.
 ///
-/// Every request is made even after one fails: one verb can be refused while the
-/// others answer, and the panes that were answered keep their rows.
+/// Two requests, and the file in between: where the daemon's config file is, and
+/// the rotation it is using now. What the window shows about the sources comes
+/// from the file itself, because the file is what the window edits. Every request
+/// is made even after one fails: one verb can be refused while the other answers,
+/// and the half that was answered keeps its place on screen.
 pub(crate) fn settings_answers() -> (Answers, u8) {
     let mut client = match Client::connect() {
         Ok(client) => client,
         Err(error) => return (Answers::unreachable(&error.to_string()), exit_code(&error)),
     };
-    let (status, status_code) = ask(&mut client, &Request::Status);
-    let (sources, sources_code) = ask(&mut client, &Request::Sources);
     let (config_path, path_code) = ask(&mut client, &Request::ConfigPath);
     let (config_check, check_code) = ask(&mut client, &Request::ConfigCheck);
     let _ = client.close();
 
-    let code = [status_code, sources_code, path_code, check_code]
+    let code = [path_code, check_code]
         .into_iter()
         .find(|code| *code != EXIT_OK)
         .unwrap_or(EXIT_OK);
-    let answers = match (status, sources, config_path, config_check) {
-        (Ok(status), Ok(sources), Ok(config_path), Ok(config_check)) => {
-            Answers::live(status, sources, config_path, config_check)
-        }
-        // The socket answered, so it is live, and the panes that were refused say
+    let answers = match (config_path, config_check) {
+        (Ok(config_path), Ok(config_check)) => Answers::live(config_path, config_check),
+        // The socket answered, so it is live, and the half that was refused says
         // so in the daemon's own words.
-        (status, sources, config_path, config_check) => Answers {
-            connected: true,
-            status,
-            sources,
+        (config_path, config_check) => Answers {
+            connection: Ok(()),
             config_path,
             config_check,
         },
