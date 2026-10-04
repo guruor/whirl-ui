@@ -2,7 +2,9 @@
 
 M1 to M4 for this repository, written 2026-10-02. M1 is the first slice: the protocol client, the tray
 item and the read-only settings window. M2 makes the settings window a writer, M3 is start at login,
-and M4 is Windows and Linux. What is deliberately out of scope is at the end.
+and M4 is Windows and Linux. A report a tester can send is future work, parked outside the milestone
+sequence, with the list in `docs/research/reporting.md`. What is deliberately out of scope is at the
+end.
 
 ## Why this file exists
 
@@ -77,6 +79,26 @@ can set a wallpaper on the platform at all.
 | 1 | whirl sets a wallpaper on the platform. | On a real Windows or Linux desktop, `whirl status` prints a `current:` image and the platform's own readback returns it. This is whirl's criterion, and this milestone does not start until whirl's own platform work closes. Artifact: whirl's release notes for the platform. |
 | 2 | The workspace builds and the app runs on the platform. | `cargo build --workspace --release` succeeds for `windows-latest` and `ubuntu-latest`, and on a real session `cargo run -- --menu-dump` prints the menu rows and the tray shows the daemon's status. Artifact: the CI legs' URLs, the `--menu-dump` output and a screenshot per platform. |
 | 3 | The macOS gate is gone. | `grep -rn 'cfg(target_os = "macos")' crates/whirl-ui/src` returns no line that excludes Windows or Linux from shipped behaviour; any gate that remains carries the reason it stays. Artifact: the grep output. |
+
+## The report a tester can send
+
+A tester on a machine we cannot reach has no way to hand us a log, and the app writes almost
+none: it has no log file and its `eprintln!` lines die with the terminal, while the daemon keeps
+`~/Library/Logs/whirl/whirl.log`. Two defects from one day, a window that opened black and a
+Gatekeeper refusal on an ad-hoc signed bundle, both left nothing behind. The maintainer asked for a
+reporting mechanism and framed it as future work:
+
+> we can see if we can add some kind of reporting mechanism so when testing on different os we should
+> be able to report the logs to the developer. Make sure the logs doesn't contain any private or
+> secret info. The logs should be self sufficient so we can understand how the app is behaving
+> without missing any critical detail. We can research for best option other cross-platform free apps
+> use for this and we can follow the same. We can add this as future work in milestone.
+
+This is parked outside the milestone sequence: no milestone above depends on it, and which part is
+worth building first is the maintainer's call. The survey of what free, cross-platform apps do, the
+fields a self-sufficient report must carry, the rule and mechanism that keep a secret out, how the
+bundle reaches the developer, and the first slice are in `docs/research/reporting.md` alone and are
+not repeated here.
 
 ## Deliberately out of scope
 
