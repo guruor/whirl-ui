@@ -1331,24 +1331,25 @@ mod tests {
         let (directory, path) = scratch("picker-from", CONFIG);
         let folder = directory.join("walls");
         std::fs::create_dir_all(&folder).expect("the folder the source reads");
-        std::fs::write(
-            &path,
-            CONFIG.replace("/tmp/walls", folder.to_str().expect("a path")),
-        )
-        .expect("the fixture");
+        // The folder goes into a JSON string, so it is written with forward
+        // slashes: a backslash would have to be escaped, and a platform that
+        // separates with one reads a forward slash too. The window hands the
+        // path to the picker unchanged, which is what the comparison below is
+        // about, so both sides are canonicalized: the platform, not this test,
+        // decides how one directory is spelled.
+        let written = folder.to_str().expect("a path").replace('\\', "/");
+        std::fs::write(&path, CONFIG.replace("/tmp/walls", &written)).expect("the fixture");
 
         let mut settings = Settings::from_answers(&Answers::live(
             vec![format!("config: {}", path.display())],
             Vec::new(),
         ));
         settings.open_picker(Some("pictures".to_string()));
-        assert_eq!(
-            settings
-                .picker
-                .as_ref()
-                .map(|picker| picker.directory.clone()),
-            Some(folder)
-        );
+        let shown = settings
+            .picker
+            .as_ref()
+            .map(|picker| picker.directory.canonicalize().expect("the folder"));
+        assert_eq!(shown, Some(folder.canonicalize().expect("the folder")));
     }
 
     #[test]

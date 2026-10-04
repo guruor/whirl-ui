@@ -30,13 +30,12 @@ use eframe::egui;
 
 use crate::settings::{
     self, APP_DAEMON_NOTE, KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, ROTATION_LINE, ROTATION_TITLE,
-    SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit,
+    SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
 };
 
-/// The window's size and title are the settings module's, because the text dump
-/// carries the title too and the two may not drift. The tray names them through
-/// this module because this module is the window.
-pub use crate::settings::{WINDOW_SIZE, WINDOW_TITLE};
+// The window's size and title are the settings module's, because the text dump
+// carries the title too and the two may not drift. Whoever opens the window
+// names them where they live, which is the settings module.
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {

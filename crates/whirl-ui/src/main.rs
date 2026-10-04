@@ -466,6 +466,19 @@ fn without_a_mode() -> ExitCode {
     tray::run()
 }
 
+/// No mode, on a platform the tray has not landed on yet.
+///
+/// The other two CI legs build this arm, which is the point: the workspace stays
+/// buildable everywhere while the tray is macOS-only (docs/milestones.md M4).
+#[cfg(not(target_os = "macos"))]
+fn without_a_mode() -> ExitCode {
+    eprintln!("whirl-ui: the menu bar item is macOS-only for now; try --menu-dump");
+    ExitCode::from(EXIT_USAGE)
+}
+
+// The test module is last on purpose: the two `without_a_mode` arms above are
+// cfg'd one or the other out, so an item written after this point would be after
+// a test module on one platform and not on another.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,14 +491,4 @@ mod tests {
         assert_eq!(Snap::parse("sideways"), None);
         assert_eq!(Snap::parse(""), None);
     }
-}
-
-/// No mode, on a platform the tray has not landed on yet.
-///
-/// The other two CI legs build this arm, which is the point: the workspace stays
-/// buildable everywhere while the tray is macOS-only (docs/milestones.md M4).
-#[cfg(not(target_os = "macos"))]
-fn without_a_mode() -> ExitCode {
-    eprintln!("whirl-ui: the menu bar item is macOS-only for now; try --menu-dump");
-    ExitCode::from(EXIT_USAGE)
 }
