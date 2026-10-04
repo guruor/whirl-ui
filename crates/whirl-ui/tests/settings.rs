@@ -7,9 +7,10 @@
 //! the panes render the reason, the interval editor is still offered, and nothing
 //! crashes.
 //!
-//! The window's one editor is asserted in `write.rs`, which drives the same write
-//! path the interval field calls. What this file adds is the window itself: which
-//! pane carries what, and which panes are still read-only.
+//! The window's two editors are asserted in `write.rs` and `sources.rs`, which
+//! drive the same write paths the interval field and the Sources pane's buttons
+//! call. What this file adds is the window itself: which pane carries what, and
+//! which pane is still read-only.
 //!
 //! The daemon is not built or started here. `whirl-ui` must never start one
 //! (whirl's docs/architecture.md section 8, "must never"), and neither does this
@@ -21,8 +22,9 @@ use std::process::Command;
 
 use whirlui_client::Client;
 
-/// The line the Sources pane carries while its controls are disabled.
-const SOURCES_READ_ONLY: &str = "read-only: editing sources is a later card";
+/// The line the Sources pane carries: what its controls write, which is the same
+/// string the pane puts on screen.
+const SOURCES_WRITES: &str = "an edit is written to the config file, validated by the daemon's own parser, and never sent to the daemon as a verb";
 
 /// The app, run with a socket path that has nothing behind it.
 fn run_with_socket(socket: &Path, mode: &str) -> std::process::Output {
@@ -73,10 +75,10 @@ fn with_no_daemon_the_panes_render_the_reason_and_the_interval_is_still_offered(
         "every pane renders the reason: {stdout}"
     );
 
-    // Sources is still read-only. The Rotation pane is not: the interval editor
-    // is offered with no daemon at all, which is the state the write path exists
-    // for, and its line is the only one in the window that is not a refusal.
-    assert_eq!(stdout.matches(SOURCES_READ_ONLY).count(), 1, "{stdout}");
+    // Sources edits: its line says what its controls write. The Rotation pane's
+    // interval editor is offered too, with no daemon at all, which is the state
+    // the write path exists for.
+    assert_eq!(stdout.matches(SOURCES_WRITES).count(), 1, "{stdout}");
     assert_eq!(stdout.matches("interval: ").count(), 1, "{stdout}");
     assert!(stdout.contains("next rotation"), "{stdout}");
 
@@ -163,8 +165,9 @@ fn with_a_daemon_the_panes_show_what_the_daemon_reports() {
         "whirl config check interval={interval}\n{stdout}"
     );
 
-    // And the Sources pane is still read-only while the interval is not.
-    assert_eq!(stdout.matches(SOURCES_READ_ONLY).count(), 1, "{stdout}");
+    // And the Sources pane's line is the one about writing, while the interval
+    // editor is the one field in the window.
+    assert_eq!(stdout.matches(SOURCES_WRITES).count(), 1, "{stdout}");
     assert_eq!(stdout.matches("interval: ").count(), 1, "{stdout}");
 }
 

@@ -14,18 +14,19 @@
 //! - **The app works with it closed.** With no window the app runs no egui pass
 //!   and draws nothing, and [`App::running`] is still true.
 //!
-//! The window's one editor is the rotation interval, and the file it writes is
-//! [`crate::config_file`]'s: this module draws the field and the `Save` button,
-//! and the button calls [`Settings::save_interval`], which is the whole of the
-//! write path. Nothing here opens a socket to change a setting, so no part of an
-//! edit is a daemon verb, and the other file this crate can write is still the
-//! screenshot a maintainer asks for on the command line.
+//! The window's editors are the rotation interval and the Sources pane, and the
+//! files they write are [`crate::config_file`]'s and [`crate::keychain`]'s: this
+//! module draws the fields and the buttons, and a click calls one of the
+//! [`Settings`] methods, which are the whole of the write paths. Nothing here
+//! opens a socket to change a setting, so no part of an edit is a daemon verb,
+//! and the other file this crate can write is still the screenshot a maintainer
+//! asks for on the command line.
 
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::settings::{Control, Pane, Settings};
+use crate::settings::{Control, Pane, SOURCE_ROW_CONTROLS, Settings, SourceAction};
 
 /// The window's title, and the app name eframe registers.
 pub const WINDOW_TITLE: &str = "whirl settings";
@@ -203,18 +204,18 @@ impl eframe::App for App {
 /// [`Settings`] value, so a pane cannot be in one window and missing from the
 /// other. The tray owns the viewport and this owns what is in it.
 ///
-/// One pane edits and two do not, and the drawing says so structurally rather
-/// than by leaving a button live that nothing answers: the Rotation pane draws
-/// [`Control::Interval`] as a text field with a `Save` button and the rest of its
-/// controls disabled, and every other pane draws all of its controls disabled.
+/// Two panes edit and one does not, and the drawing says so structurally rather
+/// than by leaving a button live that nothing answers: Sources is drawn by
+/// [`sources_pane`], Rotation's [`Control::Interval`] as a text field with a
+/// `Save` button, and the App pane draws all of its controls disabled.
 pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
     egui::Frame::central_panel(ui.style()).show(ui, |ui| {
         ui.heading(WINDOW_TITLE);
         ui.label(
-            "the daemon's own answers; the rotation interval is the one setting this window edits",
+            "the daemon's own answers; the rotation interval and the sources are what this window edits",
         );
         egui::ScrollArea::vertical().show(ui, |ui| {
-            read_only_pane(ui, &settings.sources);
+            sources_pane(ui, settings);
             rotation_pane(ui, settings);
             read_only_pane(ui, &settings.app);
         });
@@ -238,6 +239,138 @@ fn read_only_pane(ui: &mut egui::Ui, pane: &Pane) {
         }
     });
     ui.label(pane.footer.as_str());
+}
+
+/// One click on a Sources control, in the form the write path takes it.
+enum SourceClick {
+    AddFolder,
+    AddWallhaven,
+    StoreKey,
+    Enable(String),
+    Disable(String),
+    Remove(String),
+    MoveUp(String),
+    MoveDown(String),
+}
+
+impl SourceAction {
+    /// The click this action makes as a control above the rows, if it is one.
+    fn on_pane(self) -> Option<SourceClick> {
+        match self {
+            SourceAction::AddFolder => Some(SourceClick::AddFolder),
+            SourceAction::AddWallhaven => Some(SourceClick::AddWallhaven),
+            SourceAction::StoreKey => Some(SourceClick::StoreKey),
+            SourceAction::Enable
+            | SourceAction::Disable
+            | SourceAction::Remove
+            | SourceAction::MoveUp
+            | SourceAction::MoveDown => None,
+        }
+    }
+
+    /// The click this action makes in one source's row, if it is a row action.
+    fn on_source(self, id: String) -> Option<SourceClick> {
+        match self {
+            SourceAction::Enable => Some(SourceClick::Enable(id)),
+            SourceAction::Disable => Some(SourceClick::Disable(id)),
+            SourceAction::Remove => Some(SourceClick::Remove(id)),
+            SourceAction::MoveUp => Some(SourceClick::MoveUp(id)),
+            SourceAction::MoveDown => Some(SourceClick::MoveDown(id)),
+            SourceAction::AddFolder | SourceAction::AddWallhaven | SourceAction::StoreKey => None,
+        }
+    }
+}
+
+/// The Sources pane: the daemon's rows, or the file's own after an edit, the
+/// fields an added source is made of, the token field, and one set of buttons per
+/// source.
+///
+/// The click is recorded and applied after the widgets are drawn, so a button
+/// never has to hold a borrow of the state its action needs, and every button is
+/// drawn live because every button has a method behind it.
+fn sources_pane(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.heading(settings.sources.title);
+    for line in &settings.sources.lines {
+        ui.monospace(line);
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("id");
+        ui.add(egui::TextEdit::singleline(&mut settings.editor.id).desired_width(120.0));
+        ui.label("folder");
+        ui.add(egui::TextEdit::singleline(&mut settings.editor.folder).desired_width(220.0));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Wallhaven token");
+        // Masked, and the value only ever goes to `store_wallhaven_token`, which
+        // hands it to the platform's store. Nothing reads it back.
+        ui.add(
+            egui::TextEdit::singleline(&mut settings.editor.token)
+                .password(true)
+                .desired_width(220.0),
+        );
+    });
+
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        for control in &settings.sources.controls {
+            if let Control::Source(action) = control
+                && ui.add(egui::Button::new(action.label())).clicked()
+            {
+                clicked = action.on_pane();
+            }
+        }
+    });
+    for id in settings.source_ids() {
+        ui.horizontal(|ui| {
+            ui.monospace(format!("id: {id}"));
+            for action in SOURCE_ROW_CONTROLS {
+                if ui.add(egui::Button::new(action.label())).clicked() {
+                    clicked = action.on_source(id.clone());
+                }
+            }
+        });
+    }
+    if let Some(click) = clicked {
+        apply_source_click(settings, click);
+    }
+    ui.label(settings.sources.footer.as_str());
+}
+
+/// Run the one [`Settings`] method a click asked for.
+///
+/// Each arm is one call, so "which control writes what" is read here rather than
+/// inferred from the drawing, and it is exhaustive: an action that gained no arm
+/// would be a control the window draws and nothing answers.
+fn apply_source_click(settings: &mut Settings, click: SourceClick) {
+    match click {
+        SourceClick::AddFolder => {
+            settings.add_local_source();
+        }
+        SourceClick::AddWallhaven => {
+            settings.add_wallhaven_source();
+        }
+        SourceClick::StoreKey => {
+            settings.store_wallhaven_token();
+        }
+        SourceClick::Enable(id) => {
+            settings.set_source_enabled(&id, true);
+        }
+        SourceClick::Disable(id) => {
+            settings.set_source_enabled(&id, false);
+        }
+        SourceClick::Remove(id) => {
+            settings.remove_source(&id);
+        }
+        SourceClick::MoveUp(id) => {
+            settings.move_source(&id, crate::config_file::Direction::Up);
+        }
+        SourceClick::MoveDown(id) => {
+            settings.move_source(&id, crate::config_file::Direction::Down);
+        }
+    }
 }
 
 /// The Rotation pane: the interval field, a `Save` button, the four controls that
@@ -348,10 +481,11 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_window_starts_nothing_and_only_the_interval_edits() {
+    fn opening_the_window_starts_nothing_and_the_controls_that_edit_are_the_two_editors() {
         // Opening takes panes that were read beforehand, so the call itself has
-        // nothing to start. The window it takes has exactly one control that
-        // edits: the rotation interval, whose write path is `config_file`.
+        // nothing to start. What it opens has four controls that edit: the
+        // interval, whose write path is `config_file`, and the Sources pane's
+        // three, whose write paths are `config_file` and `keychain`.
         let mut app = App::new(panes());
         app.close_settings();
         let before = app.running();
@@ -359,7 +493,12 @@ mod tests {
         assert_eq!(app.running(), before);
         assert_eq!(
             app.settings().expect("an open window").editable_controls(),
-            vec![("Rotation", crate::settings::Control::Interval)]
+            vec![
+                ("Sources", Control::Source(SourceAction::AddFolder)),
+                ("Sources", Control::Source(SourceAction::AddWallhaven)),
+                ("Sources", Control::Source(SourceAction::StoreKey)),
+                ("Rotation", Control::Interval),
+            ]
         );
     }
 
@@ -371,7 +510,7 @@ mod tests {
         app.open_settings(panes());
         assert_eq!(
             app.settings().expect("an open window").enabled_controls(),
-            1
+            4
         );
         assert!(app.running());
         app.close_settings();
