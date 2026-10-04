@@ -64,6 +64,7 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
 
     docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
     docs/design.md        the visual language, and what each element the design draws would cost in config
+    docs/installation.md  both install routes step by step: one command, and the same work by hand
 
 ## License
 
