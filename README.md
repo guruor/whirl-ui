@@ -20,7 +20,7 @@ unfinished.
 
 One command installs the daemon and the app, and reuses a daemon that is already there. It downloads
 two archives, checks each against the sha256 published beside it, and writes nothing until both checks
-pass. It needs no root, no password and no answer. Read it first:
+pass. It uses no root and asks no question. Read it first:
 
     curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh
     less install.sh
@@ -30,10 +30,20 @@ The same thing as one line, for anyone who has read it and trusts it:
 
     curl -fsSL https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh | sh
 
-The daemon goes into `~/.local/bin` and `Whirl.app` into `/Applications`. The script prints what it
-installed, what it skipped and why, and the one command that undoes it. `uninstall.sh` removes exactly
-what was installed and names what it deliberately leaves alone: the daemon's config, state, cache and
-log. The daemon's own login unit is whirl's to install, so this script never writes one.
+The daemon goes into `~/.local/bin` and `Whirl.app` into `/Applications`, which is outside your home:
+that one write is the only step macOS may ask you to authorize, and the script prints what may be asked
+and why rather than driving or dismissing that dialog. Whirl is not notarized, so its first launch may
+report that macOS cannot check it: open it once from Applications and allow it under
+System Settings > Privacy & Security if asked.
+
+The script prints what it installed, what it skipped and why, and the one command that undoes it. What
+it installed is recorded in a receipt (`WHIRL_UI_RECEIPT`, by default
+`~/Library/Application Support/whirl-ui/install.receipt`), and `uninstall.sh` removes the paths in that
+receipt and nothing else: a daemon or app that was already here was reused, not installed, and both
+scripts leave it alone. `uninstall.sh` never kills a process it did not start - it stops the daemon
+only through whirl's own command - and it names what it deliberately leaves alone: the daemon's config,
+state, cache and log. The daemon's own login unit is whirl's to install and whirl's to remove, so
+neither script writes a unit file.
 
 ## Layout
 
