@@ -15,7 +15,11 @@ their files may not be redistributed.
 
 The SVGs are paths in a 16x16 viewBox:
 
-- `mark.svg` is the whirl.
+- `mark.svg` is the whirl: three arms of one spiral, 150 degrees each, a third of
+  a turn apart, wound clockwise out of a hollow centre, stroked in black so the
+  menu bar variant stays a template image. The window's own header draws the same
+  geometry in the accent (`crates/whirl-ui/src/theme.rs`), so the mark on screen
+  and the mark in the menu bar cannot drift into two drawings.
 - `mark-paused.svg` is the whirl paused, for `paused=true`: the whirl's outer
   turn wound around a pause, drawn in the same 16x16 box.
 - `app-icon.svg` is the same whirl in white on a rounded square, on the macOS
