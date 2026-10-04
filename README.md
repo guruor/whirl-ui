@@ -16,6 +16,25 @@ The tray is **macOS first**. macOS-only code is gated behind `#[cfg(target_os = 
 Linux and Windows builds compile the same workspace and stay green while those platforms are
 unfinished.
 
+## Install
+
+One command installs the daemon and the app, and reuses a daemon that is already there. It downloads
+two archives, checks each against the sha256 published beside it, and writes nothing until both checks
+pass. It needs no root, no password and no answer. Read it first:
+
+    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh
+    less install.sh
+    sh install.sh
+
+The same thing as one line, for anyone who has read it and trusts it:
+
+    curl -fsSL https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh | sh
+
+The daemon goes into `~/.local/bin` and `Whirl.app` into `/Applications`. The script prints what it
+installed, what it skipped and why, and the one command that undoes it. `uninstall.sh` removes exactly
+what was installed and names what it deliberately leaves alone: the daemon's config, state, cache and
+log. The daemon's own login unit is whirl's to install, so this script never writes one.
+
 ## Layout
 
     crates/whirlui-client/   the protocol client (library)
