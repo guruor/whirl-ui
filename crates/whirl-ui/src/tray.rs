@@ -346,7 +346,8 @@ pub fn run() -> ExitCode {
         event_loop_builder: Some(Box::new(|builder| {
             // The one thing eframe does not surface (whirl's
             // docs/research/frontend-stack.md 3.4). Without it the app takes a
-            // Dock tile, which the card forbids.
+            // Dock tile; the accessory policy below is what prevents that
+            // (`docs/milestones.md` M1 criterion 5, no Dock icon).
             use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
             builder.with_activation_policy(ActivationPolicy::Accessory);
         })),
@@ -656,8 +657,8 @@ fn build_menu(rows: &[Row]) -> Menu {
     menu
 }
 
-/// Wall-clock nanoseconds, the clock the measurement in the card compares
-/// against.
+/// Wall-clock nanoseconds, the clock the timing in `docs/milestones.md` M1
+/// criterion 4 compares against.
 fn unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -32,8 +32,8 @@ pub enum View {
 /// A `status` snapshot plus the two things the events can change.
 ///
 /// Only the keys the menu draws are tracked, and each one is tracked by the
-/// name section 2.10 gives it. `status` itself is kept whole so a later card's
-/// settings window can read the keys this one does not draw.
+/// name section 2.10 gives it. `status` itself is kept whole so the settings
+/// window (M1 criterion 6) can read the keys the menu does not draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Live {
     status: Status,

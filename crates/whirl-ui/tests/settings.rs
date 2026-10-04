@@ -2,10 +2,10 @@
 //!
 //! A window cannot be opened in a test, so the window is made answerable from the
 //! command line: `whirl-ui --dump-settings` prints the two choices it draws, in
-//! the same words, and this file asserts them. The two states the card names are
-//! both here: a real daemon (which every assertion about values needs), and no
-//! daemon at all, where the window renders the reason, still offers its controls,
-//! and nothing crashes.
+//! the same words, and this file asserts them. The two states `README.md`
+//! describes are both here: a real daemon (which every assertion about values
+//! needs), and no daemon at all, where the window renders the reason, still
+//! offers its controls, and nothing crashes.
 //!
 //! The window's edits are asserted in `write.rs` and `sources.rs`, which drive
 //! the same methods the controls call. What this file adds is the window itself:

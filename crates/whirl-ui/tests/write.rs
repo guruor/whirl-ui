@@ -2,9 +2,10 @@
 //!
 //! `whirl-ui --set-rotation <value> <minutes|hours>` calls the same
 //! `save_interval` the settings window's `Every [n] [unit]` control's `Save`
-//! button calls, from the same two fields. This file asserts the round trip the
-//! card names: the value lands in the file the daemon reads, a value the parser
-//! refuses does not, and the file's mode and its other keys survive either way.
+//! button calls, from the same two fields. This file asserts the round trip M2
+//! criterion 1 names: the value lands in the file the daemon reads, a value the
+//! parser refuses does not, and the file's mode and its other keys survive
+//! either way.
 //!
 //! No daemon is started here and none is needed. `WHIRL_SOCKET` is pointed at a
 //! path with nothing behind it on purpose: the one thing these tests must not do
