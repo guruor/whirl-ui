@@ -128,6 +128,11 @@ rustup installs the right compiler and components on first use; no other setup s
     cargo fmt --all -- --check                               # the formatting gate
     cargo clippy --workspace --all-targets -- -D warnings    # the lint gate, warnings denied
 
+The one thing the suite cannot assert is the menu bar launch itself, because it needs a window server.
+A maintainer checks it on a Mac:
+
+    scripts/check-launch-window.sh    # fails if the app shows a window with no dialog open
+
 The app talks to a running daemon, and it will not start one for you: build and run `whirld` from the
 [whirl repository](https://github.com/guruor/whirl) first. With no daemon reachable it has nothing to
 show and says so.

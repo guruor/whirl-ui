@@ -121,6 +121,15 @@ impl App {
         self.settings = None;
     }
 
+    /// Whether the dialog is on screen. Closing it is a state the app sits in
+    /// rather than an exit, so this is how a caller tells the two apart, and the
+    /// tray is one: the window is on screen exactly while this is true
+    /// (`crate::tray`, `App::state_window`).
+    #[allow(dead_code)] // The tray is the only caller, and the tray is macOS-only.
+    pub fn open(&self) -> bool {
+        self.settings.is_some()
+    }
+
     /// The window the dialog is showing, or `None` while it is closed. The tests
     /// read it; the window draws the same value through
     /// [`App::ui`](eframe::App::ui).
