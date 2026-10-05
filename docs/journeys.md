@@ -55,9 +55,10 @@ either. Nothing in the app offers to start it.
 **What they should see.** The daemon running, or a control that starts it and says what it did. The
 window already has the place for the sentence; it should carry the control beside it.
 
-**What it costs.** The app may not spawn the daemon: its contract is to be a client of the daemon and
-never to start, stop or restart it. Starting it has to go through the daemon's own command, and that
-command has to exist first. This is the expensive half of the five.
+**What it costs.** The app may not spawn the daemon: its contract is to be a client of the daemon, and
+its one part in the daemon's lifetime is the daemon's own command, never a process of its own. Starting
+it has to go through the daemon's own command, and that command has to exist first. This is the
+expensive half of the five.
 
 **Status: known and open.** No change is in progress, because it waits on the daemon's own command.
 
