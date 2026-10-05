@@ -2,7 +2,10 @@
 
 M1 to M4 for this repository, written 2026-10-02. M1 is the first slice: the protocol client, the tray
 item and the read-only settings window. M2 makes the settings window a writer, M3 is start at login,
-and M4 is Windows and Linux. What is deliberately out of scope is at the end.
+and M4 is Windows and Linux. The app's appearance is not a milestone: it is settled in
+`docs/design.md`, which also holds the reference's extra enhancements. A report a tester can send is
+future work, parked outside the milestone sequence, with the list in `docs/research/reporting.md`.
+What is deliberately out of scope is at the end.
 
 ## Why this file exists
 
@@ -62,7 +65,7 @@ gets a supervisor unit from whirl's own installation, not from this app.
 
 | # | criterion | proof |
 |---|---|---|
-| 1 | The app installs and removes its own login item. | After "start at login" is enabled in the app, `launchctl print gui/$(id -u)/<app-label>` exits 0 and `sfltool dumpbtm` lists the app; disabling removes it from both. Artifact: the two commands' output before and after. |
+| 1 | The app installs and removes its own login item. | The app's own mode does both: `whirl-ui --login-item register` then `whirl-ui --login-item status` prints `login item: enabled (status 1)`, and `sfltool dumpbtm` lists one row for the app (`Name: Whirl`, `Identifier: 2.com.guruor.whirl-ui`, `URL: file:///Applications/Whirl.app/`); `whirl-ui --login-item unregister` prints `login item: not registered (status 0)` and the Login Items pane no longer lists Whirl (the operator's own visual check). The bundle is what macOS registers and the status is read from the app's own `SMAppService.mainApp.status`, so the mode refuses from a bare binary and names the path it looked at rather than registering the directory it sits in. `sfltool dumpbtm` runs without root (exit 0, measured 2026-10-04). Two limits belong in the criterion rather than behind it, because a proof nobody can produce is worse than none: `unregister` leaves the app's row in the BTM database as `Disposition: [disabled, allowed, notified]` (the API has no delete, and the row survives the bundle being moved away), and no part of this is a launchd service, so `launchctl print gui/$(id -u)/<label>` exits 113 for every label (measured on macOS 26.7) and proves nothing either way. Artifact: the two status lines, the two `dumpbtm` rows, and the Login Items pane. |
 | 2 | The app does not own the daemon's lifetime. | `grep -rn 'LaunchAgents' crates/whirl-ui/src` names no write to `~/Library/LaunchAgents`, and `pgrep -x whirld` reports the same single daemon before launch and after quit with the login item enabled (section 8 item 3). Artifact: the grep and the `pgrep` output. |
 | 3 | The daemon's unit is whirl's, not the app's. | Once whirl's installation ships the unit, `launchctl print gui/$(id -u)/com.guruor.whirl` exits 0 whether or not the app is installed, and the unit file is the one whirl's installer wrote. Artifact: the command's output and the unit file's path. |
 
@@ -77,6 +80,41 @@ can set a wallpaper on the platform at all.
 | 1 | whirl sets a wallpaper on the platform. | On a real Windows or Linux desktop, `whirl status` prints a `current:` image and the platform's own readback returns it. This is whirl's criterion, and this milestone does not start until whirl's own platform work closes. Artifact: whirl's release notes for the platform. |
 | 2 | The workspace builds and the app runs on the platform. | `cargo build --workspace --release` succeeds for `windows-latest` and `ubuntu-latest`, and on a real session `cargo run -- --menu-dump` prints the menu rows and the tray shows the daemon's status. Artifact: the CI legs' URLs, the `--menu-dump` output and a screenshot per platform. |
 | 3 | The macOS gate is gone. | `grep -rn 'cfg(target_os = "macos")' crates/whirl-ui/src` returns no line that excludes Windows or Linux from shipped behaviour; any gate that remains carries the reason it stays. Artifact: the grep output. |
+
+## The report a tester can send
+
+A tester on a machine we cannot reach has no way to hand us a log, and the app writes almost
+none: it has no log file and its `eprintln!` lines die with the terminal, while the daemon keeps
+`~/Library/Logs/whirl/whirl.log`. Two defects from one day, a window that opened black and a
+Gatekeeper refusal on an ad-hoc signed bundle, both left nothing behind. The maintainer asked for a
+reporting mechanism and framed it as future work:
+
+> we can see if we can add some kind of reporting mechanism so when testing on different os we should
+> be able to report the logs to the developer. Make sure the logs doesn't contain any private or
+> secret info. The logs should be self sufficient so we can understand how the app is behaving
+> without missing any critical detail. We can research for best option other cross-platform free apps
+> use for this and we can follow the same. We can add this as future work in milestone.
+
+This is parked outside the milestone sequence: no milestone above depends on it, and which part is
+worth building first is the maintainer's call. The survey of what free, cross-platform apps do, the
+fields a self-sufficient report must carry, the rule and mechanism that keep a secret out, how the
+bundle reaches the developer, and the first slice are in `docs/research/reporting.md` alone and are
+not repeated here.
+
+## Appearance
+
+The app's appearance is settled in `docs/design.md`, not here, and that file is authoritative for it:
+the visual language, and the palette sampled from the maintainer's own reference mockup with the
+command that produced each value recorded beside it. It was written 2026-10-04 from that reference, so
+a later reader can re-derive the numbers rather than read them by eye. The palette there is the
+contract for the dark theme, not a starting point to be improved on.
+
+## The reference's extra functionality
+
+`docs/design.md` also takes each element the reference draws and states what it needs today and what
+config change it would imply. Those items are parked outside the milestone sequence: no milestone in
+this file depends on them, and which of them are worth building is the maintainer's call. The list
+lives in `docs/design.md` alone and is not repeated here.
 
 ## Deliberately out of scope
 

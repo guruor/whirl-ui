@@ -24,6 +24,7 @@ mod config_file;
 mod dump;
 mod icon;
 mod keychain;
+mod login_item;
 mod menu;
 mod settings;
 mod state;
@@ -78,6 +79,11 @@ modes:
                                                     argument)
                           status                    the store item's attributes,
                                                     never its value
+  --login-item <verb>   the app's own login item, through macOS's own API
+                        (macOS only, and only from inside Whirl.app):
+                          status      what macOS reports about it now
+                          register    ask macOS to start the app at login
+                          unregister  remove the registration
   --screenshot <path> [state]
                         run the window, write it to a PNG, and exit. The state
                         names the pane to photograph and any control to open on
@@ -103,7 +109,12 @@ parser or the store refused it, and 3 when the verb or its arguments do not make
 a command line; it needs no daemon either, for the same reason. `--check-update`
 makes the release check the About pane's button makes: exit 0 when the check was
 made (a newer release is published, or this one is the newest), and 2 when it
-could not be made, with the reason on the line it prints. It needs no daemon.";
+could not be made, with the reason on the line it prints. It needs no daemon.
+`--login-item` exits 0 when it has printed the status it was asked for (every
+verb ends by printing it, so a before and an after are the same line), 1 when
+macOS refused the change or the executable is not inside an app bundle, which is
+the one thing a login item needs and a bare binary has not got, and 3 when the
+verb is not one of the three.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -134,6 +145,10 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
         return check_update();
+    }
+
+    if first == "--login-item" {
+        return login_item_command(&args[1..]);
     }
 
     if first == "--screenshot" {
@@ -538,6 +553,69 @@ fn keychain_status() -> ExitCode {
         }
     }
 }
+
+/// The app's own login item, from a terminal.
+///
+/// The three verbs are Apple's two calls and its one reader: `register` and
+/// `unregister` change the login item, and `status` is what macOS reports about
+/// it. Every verb ends by printing the status, so the line before a change and
+/// the line after it are the same line read twice, which is what M3 criterion 1
+/// asks a reader to compare.
+///
+/// The bundle check comes first, and it is why the mode looks like this: a login
+/// item is a registration of an *app bundle*, so an executable that is not inside
+/// one has nothing to register. It is told so, with the path it looked at, rather
+/// than silently registering whichever directory the binary happens to sit in.
+fn login_item_command(args: &[String]) -> ExitCode {
+    let Some(verb @ ("status" | "register" | "unregister")) = args.first().map(String::as_str)
+    else {
+        return usage(LOGIN_ITEM_VERBS);
+    };
+    if args.len() > 1 {
+        return usage(LOGIN_ITEM_VERBS);
+    }
+    let Some(bundle) = login_item::bundle() else {
+        let looked_at = env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| String::from("<this executable>"));
+        eprintln!(
+            "whirl-ui: {looked_at} is not inside an app bundle, so it has no login item of its \
+             own; a login item is a registration of the app's bundle, and Whirl.app is the bundle \
+             this app ships as (scripts/make-bundle.sh writes one)"
+        );
+        return ExitCode::from(EXIT_REFUSED);
+    };
+    match verb {
+        "register" => {
+            if let Err(error) = login_item::register() {
+                eprintln!("whirl-ui: registering the login item failed: {error}");
+                return ExitCode::from(EXIT_REFUSED);
+            }
+        }
+        "unregister" => {
+            if let Err(error) = login_item::unregister() {
+                eprintln!("whirl-ui: unregistering the login item failed: {error}");
+                return ExitCode::from(EXIT_REFUSED);
+            }
+        }
+        // `status` changes nothing, which is the point of it.
+        _ => {}
+    }
+    match login_item::status() {
+        Ok(status) => {
+            print_line(&status.line());
+            print_line(&bundle.line());
+            ExitCode::from(EXIT_OK)
+        }
+        Err(error) => {
+            eprintln!("whirl-ui: {error}");
+            ExitCode::from(EXIT_REFUSED)
+        }
+    }
+}
+
+/// The `--login-item` verbs, as the usage line spells them.
+const LOGIN_ITEM_VERBS: &str = "--login-item takes a verb: status, register or unregister";
 
 /// A command line a mode cannot work, with the reason and the usage.
 fn usage(message: &str) -> ExitCode {

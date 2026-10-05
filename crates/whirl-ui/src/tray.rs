@@ -342,6 +342,13 @@ pub fn run() -> ExitCode {
             .with_inner_size(WINDOW_SIZE)
             // The menu is the product and the window is a dialog: it starts
             // hidden and only `Settings…` shows it.
+            //
+            // This is the ask, not the hiding. eframe shows a root window after
+            // the first painted frame whatever `visible` the builder asked for
+            // (`eframe` `native/epi_integration.rs`, `post_rendering`), so a
+            // window that must start hidden has to be hidden again from the app:
+            // `App::state_window`, which is also where the window comes off the
+            // screen when the dialog closes.
             .with_visible(false),
         event_loop_builder: Some(Box::new(|builder| {
             // The one thing eframe does not surface (whirl's
@@ -394,6 +401,10 @@ struct App {
     /// The mark currently set, so a repaint that changed no state leaves the
     /// icon alone. The menu is rebuilt for the same reason.
     mark: icon::Mark,
+    /// What the framework was last told about the settings window's visibility.
+    /// `None` is before the first pass has told it anything, which that pass must
+    /// treat as a change: see [`visibility`] and [`App::state_window`].
+    stated: Option<bool>,
 }
 
 impl App {
@@ -451,6 +462,7 @@ impl App {
             dialog: app::App::closed(),
             rendered,
             mark,
+            stated: None,
         };
         // One pass is asked for from another thread, because asked for here it
         // would be discarded (see `Shared::attach`). It costs one thread start
@@ -458,6 +470,49 @@ impl App {
         // built from the view above and eframe being able to draw anything.
         first_pass(&cc.egui_ctx);
         Ok(app)
+    }
+
+    /// Put the settings window on screen when there is a dialog in it, and take it
+    /// off the screen when there is not, at most once per change.
+    ///
+    /// This is the half of the window's rule the builder cannot state.
+    /// `NativeOptions.viewport.with_visible(false)` in [`run`] is not honoured:
+    /// eframe shows a root window after its first painted frame whatever the
+    /// builder asked for (`eframe` `native/epi_integration.rs`, `post_rendering`),
+    /// so an app that wants a window to stay hidden has to say so from a pass, and
+    /// the pass that says it is the first one. Without this the app presented an
+    /// empty window at launch, in the frame's own clear colour, because
+    /// `app::App::ui` draws nothing while no dialog is open and eframe clears the
+    /// frame with `App::clear_color`'s default (`eframe` `epi.rs`,
+    /// `rgba(12, 12, 12, 180)`). Measured 2026-10-04, before this: the window is on
+    /// screen 1.3 s to 2.3 s after launch in 10 of 10 runs.
+    ///
+    /// `stated` is what the framework was last told, so a pass that changes
+    /// nothing sends nothing. The first pass is `None` and therefore always
+    /// speaks: that is the pass whose paint eframe answers by showing the window.
+    fn state_window(&mut self, ctx: &egui::Context) {
+        let Some(visible) = visibility(self.dialog.open(), self.stated) else {
+            return;
+        };
+        self.stated = Some(visible);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(visible));
+        if visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        // One line per change, and no line at all from a pass that changed
+        // nothing, so the log says which of the two states the window was in and
+        // when. A window on screen with no dialog in it is this defect, and a log
+        // that shows a launch with no `shown` line is what tells it from a
+        // launch that presented one.
+        eprintln!(
+            "whirl-ui: {} the settings window is {}",
+            unix_nanos(),
+            if visible {
+                "shown with its panes"
+            } else {
+                "hidden: no dialog is open"
+            }
+        );
     }
 }
 
@@ -606,8 +661,6 @@ impl eframe::App for App {
         // pass instead of showing anything itself.
         if let Some(panes) = self.shared.take_window_request() {
             self.dialog.open_settings(panes);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
         // The `Quit` row. `app` is told the app is going first, so the close sent
@@ -624,6 +677,11 @@ impl eframe::App for App {
         // app up. That is `app`'s rule, and running it here is what makes this the
         // settings window rather than a second window that resembles it.
         eframe::App::logic(&mut self.dialog, ctx, frame);
+
+        // And the window itself, from that state. Last, so that a close button,
+        // which `app`'s rule answers by hiding the window, is seen here in the
+        // same pass.
+        self.state_window(ctx);
     }
 
     /// The settings window's body, drawn by `app`.
@@ -655,6 +713,19 @@ fn build_menu(rows: &[Row]) -> Menu {
         }
     }
     menu
+}
+
+/// Whether a pass must tell the framework the settings window is visible, given
+/// whether a dialog is open and what the framework was last told.
+///
+/// `None` is "told nothing yet", which is the first pass, and it is why the app
+/// speaks at launch even though [`run`] asked the builder for a hidden window:
+/// eframe shows a root window after its first painted frame, so nothing the
+/// builder was asked for is still true by then. Everything else is one change per
+/// change: `Some(visible)` only when the window should be a different state from
+/// the one the framework last heard about.
+fn visibility(dialog_open: bool, stated: Option<bool>) -> Option<bool> {
+    (stated != Some(dialog_open)).then_some(dialog_open)
 }
 
 /// Wall-clock nanoseconds, the clock the timing in `docs/milestones.md` M1
@@ -726,5 +797,33 @@ mod tests {
         assert_eq!(click("sep"), Click::Nothing);
         assert_eq!(click(""), Click::Nothing);
         assert_eq!(click("--menu-dump"), Click::Nothing);
+    }
+
+    #[test]
+    fn the_first_pass_hides_the_window_because_it_has_no_dialog_to_show() {
+        // The regression this guard is for: the tray asked for a hidden window
+        // with `with_visible(false)` and nothing else, eframe showed the window
+        // after the first painted frame anyway (`epi_integration::post_rendering`,
+        // eframe 0.36.2), and the app presented an empty window at launch (10 of
+        // 10 measured, 2026-10-04).
+        // `None` is "the framework has not been told anything", and a pass that
+        // has no dialog must answer it with a hidden window rather than with
+        // silence.
+        assert_eq!(visibility(false, None), Some(false));
+    }
+
+    #[test]
+    fn only_a_dialog_puts_the_window_on_screen() {
+        // Showing is what a `Settings…` click does, and nothing else does it: the
+        // panes are read before the window request, so the pass that shows the
+        // window is a pass that has panes to draw.
+        assert_eq!(visibility(true, Some(false)), Some(true));
+        assert_eq!(visibility(true, None), Some(true));
+        // A window that is already in the state its dialog asks for is left
+        // alone, so a repaint that changed nothing sends nothing.
+        assert_eq!(visibility(true, Some(true)), None);
+        assert_eq!(visibility(false, Some(false)), None);
+        // A dialog that closed takes the window off the screen again.
+        assert_eq!(visibility(false, Some(true)), Some(false));
     }
 }
