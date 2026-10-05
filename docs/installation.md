@@ -58,10 +58,13 @@ ones with the overrides under "Route A today", which is the only difference, so 
 What it does, in order:
 
 1. Refuses early. Not macOS, not arm64, or older than 13, and it writes nothing.
-2. Reuse before download. If `whirld` is on `PATH`, or at `$WHIRL_PREFIX/whirld`, or a loaded login
-   item exists, it prints `reusing the daemon already installed: <path>` and touches nothing.
-   Otherwise it downloads the daemon archive, checks it, and installs the three binaries into
-   `$WHIRL_PREFIX` (default `~/.local/bin`).
+2. Reuse before download, one release at a time. If `whirld` is on `PATH`, or at
+   `$WHIRL_PREFIX/whirld`, or a loaded login item exists, the script reads the daemon's
+   version from `whirl --version` and reuses it only when it is the same release or
+   newer; an older daemon is replaced, because the app and the daemon are installed as
+   one release and a pair from two of them cannot work together. Otherwise it downloads
+   the daemon archive, checks it, and installs the three binaries into `$WHIRL_PREFIX`
+   (default `~/.local/bin`).
 3. Writes no login unit. The daemon owns its unit, so the script asks whirl's own installer to write
    one when whirl has that verb. whirl v0.1.0 does not have it, and the script says that in one line
    rather than inventing a unit file.

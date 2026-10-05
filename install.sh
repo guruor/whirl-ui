@@ -5,16 +5,22 @@
 # Installs two things and reports on both:
 #
 #   whirl (the daemon)    the three release binaries (whirl, whirld, whirl-worker)
-#                         into $WHIRL_PREFIX, default ~/.local/bin. A daemon that is
-#                         already installed is reused, printed, and never touched.
+#                         into $WHIRL_PREFIX, default ~/.local/bin. A daemon already
+#                         installed is reused only when it is the same release or newer;
+#                         its version is read from `whirl --version`.
 #   Whirl (the tray app)  Whirl.app into $WHIRL_UI_PREFIX, default /Applications.
 #
-# What this run installs is written to a receipt, $WHIRL_UI_RECEIPT, default
+# The app and the daemon are installed as one release, and an older daemon is replaced
+# rather than reused, so the pair this script leaves behind can work together.
+#
+# What this run is paired with is written to a receipt, $WHIRL_UI_RECEIPT, default
 # ~/Library/Application Support/whirl-ui/install.receipt, and uninstall.sh removes the
-# paths that receipt names and nothing else. That is what makes the reuse promise hold
-# at the other end: a daemon or app that was already here is reused, printed as not
-# touched, and never entered in the receipt, so uninstall.sh leaves it alone too. A run
-# that installed nothing writes no receipt and leaves nothing to undo.
+# paths that receipt names and nothing else. The daemon is part of that pair: a daemon
+# this run installed, and one it reused, are both named by their `binary` lines, so
+# uninstall.sh removes the pair together. An app that was already here is reused,
+# printed as not touched, and never entered in the receipt, so uninstall.sh leaves it
+# alone. A run that neither installed nor reused anything writes no receipt and leaves
+# nothing to undo.
 #
 # The app's prefix is /Applications by default, which is outside your home. That one
 # write is the only thing here macOS may ask you to authorize: the script prints what
@@ -75,10 +81,14 @@ It downloads the whirl daemon archive and the Whirl.app archive, checks each aga
 the sha256 published beside it, and installs them. It never writes the daemon's login
 unit: whirl owns that unit and installs it.
 
-What this run installs is recorded in a receipt (WHIRL_UI_RECEIPT, default
+The app and the daemon are installed as one release: a daemon already here is reused
+only when it is the same release or newer, and an older daemon is replaced by the
+pinned one.
+
+What this run is paired with is recorded in a receipt (WHIRL_UI_RECEIPT, default
 ~/Library/Application Support/whirl-ui/install.receipt), and uninstall.sh removes the
-paths that receipt names and nothing else. A daemon or an app that was already here is
-reused, printed as not touched, and left alone by both scripts.
+paths that receipt names and nothing else, the daemon's binaries included. An app that
+was already here is reused, printed as not touched, and left alone by both scripts.
 
 Whirl.app goes into /Applications, outside your home. That is the one write macOS may
 ask you to authorize: the script says what may be asked and never answers the dialog
@@ -242,6 +252,49 @@ verify() {
     note "  checksum   ok  $actual"
 }
 
+# version_ge <a> <b>: is version a at least version b? Both are dotted numbers, compared
+# field by field, so 0.2 and 0.2.0 are equal and 0.10 is newer than 0.9. A missing field
+# is 0 and a field that is not a number is 0 too, so a version this script cannot parse
+# never reads as newer than the pinned one.
+version_ge() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        n = split(a, x, "."); m = split(b, y, ".");
+        for (i = 1; i <= n || i <= m; i++) {
+            xa = (i <= n ? x[i] + 0 : 0);
+            ya = (i <= m ? y[i] + 0 : 0);
+            if (xa > ya) exit 0;
+            if (xa < ya) exit 1;
+        }
+        exit 0;
+    }'
+}
+
+# daemon_binary <name>: the installed path of one daemon binary, from wherever the daemon
+# was found. The three are installed side by side, so the found binary's own directory is
+# asked first, then PATH, then the prefix. Nothing is printed when the path cannot be
+# named, which is the case when only the login item was found.
+daemon_binary() {
+    name=$1
+    case "$daemon_found" in
+        /*)
+            dir=$(dirname "$daemon_found")
+            if [ -x "$dir/$name" ]; then
+                printf '%s\n' "$dir/$name"
+                return 0
+            fi
+            ;;
+    esac
+    found=$(command -v "$name" 2>/dev/null || true)
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+    fi
+    if [ -x "$daemon_prefix/$name" ]; then
+        printf '%s\n' "$daemon_prefix/$name"
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # plan: reuse first, and verify everything before anything is written
 #
@@ -252,15 +305,65 @@ verify() {
 
 daemon_action=install
 daemon_found=
+daemon_cli=
+daemon_version=
+daemon_replaced=
 if command -v whirld >/dev/null 2>&1; then
-    daemon_action=reused
     daemon_found="$(command -v whirld)"
 elif [ -x "$daemon_prefix/whirld" ]; then
-    daemon_action=reused
     daemon_found="$daemon_prefix/whirld"
 elif launchctl print "gui/$(id -u)/com.guruor.whirl" >/dev/null 2>&1; then
-    daemon_action=reused
     daemon_found="the loaded login item com.guruor.whirl"
+fi
+
+# A daemon found by any route is versioned before it is trusted, and the version is read
+# from the CLI, `whirl`, not from `whirld`: `whirl --version` answers from the binary
+# itself with no daemon running, while `whirld` has no version flag and running it with
+# no arguments starts a daemon, which this script must never do.
+if [ -n "$daemon_found" ]; then
+    case "$daemon_found" in
+        /*)
+            if [ -x "$(dirname "$daemon_found")/whirl" ]; then
+                daemon_cli="$(dirname "$daemon_found")/whirl"
+            fi
+            ;;
+    esac
+    if [ -z "$daemon_cli" ]; then
+        daemon_cli="$(command -v whirl 2>/dev/null || true)"
+    fi
+    if [ -z "$daemon_cli" ] && [ -x "$daemon_prefix/whirl" ]; then
+        daemon_cli="$daemon_prefix/whirl"
+    fi
+    if [ -n "$daemon_cli" ] && [ -x "$daemon_cli" ]; then
+        daemon_version=$("$daemon_cli" --version 2>/dev/null | awk '{ print $NF }' | head -1)
+        case "$daemon_version" in
+            [0-9]*.[0-9]*) ;;
+            *) daemon_version= ;;
+        esac
+    fi
+
+    if [ -n "$daemon_version" ]; then
+        if version_ge "$daemon_version" "${WHIRL_VERSION#v}"; then
+            daemon_action=reused
+        else
+            daemon_replaced="$daemon_version"
+        fi
+    elif [ -n "$daemon_cli" ] && [ -x "$daemon_cli" ]; then
+        # No static version. The observable question is whether this CLI knows the
+        # `daemon` verb at all: a release without it cannot be asked for the lifecycle the
+        # app drives, so it is older than the pinned one. The CLI's own usage is the
+        # answer, and printing usage starts nothing.
+        if "$daemon_cli" 2>&1 | grep -q '^[[:space:]]*daemon[[:space:]]'; then
+            daemon_action=reused
+            daemon_version=unknown
+        else
+            daemon_replaced=unknown
+        fi
+    else
+        # A daemon with no CLI beside it cannot be versioned or asked for the lifecycle
+        # verb, so it is not the daemon the app drives. The pinned release is installed.
+        daemon_replaced=unknown
+    fi
 fi
 
 app_action=install
@@ -292,10 +395,35 @@ fi
 
 if [ "$daemon_action" = reused ]; then
     note "backend:  reusing the daemon already installed: $daemon_found"
-    note "  note       this run installs nothing for the daemon and writes no receipt line"
-    note "             for it, so uninstall.sh will not remove a daemon it did not install"
+    case "$daemon_version" in
+        unknown)
+            note "  version    it answers no --version, but its own usage lists the \`daemon\`"
+            note "             command, so it is not older than $WHIRL_VERSION; it is kept"
+            ;;
+        "${WHIRL_VERSION#v}")
+            note "  version    $daemon_version, the same release as $WHIRL_VERSION; it is kept"
+            ;;
+        *)
+            note "  version    $daemon_version, newer than $WHIRL_VERSION; it is kept"
+            ;;
+    esac
+    note "  note       this run installs no daemon binary, but the daemon it reuses is named"
+    note "             in the receipt, so uninstall.sh removes the app and daemon together"
 else
-    note "backend:  whirl $WHIRL_VERSION is not installed; it will go into $daemon_prefix"
+    if [ -n "$daemon_replaced" ]; then
+        if [ "$daemon_replaced" = unknown ]; then
+            note "backend:  the daemon at ${daemon_cli:-$daemon_found} is older than $WHIRL_VERSION"
+            note "             (it answers no --version and its usage has no \`daemon\` command),"
+            note "             so $WHIRL_VERSION replaces it"
+        else
+            note "backend:  the daemon at $daemon_cli is version $daemon_replaced, older than"
+            note "             $WHIRL_VERSION, so $WHIRL_VERSION replaces it"
+        fi
+        note "             the app and the daemon are installed as one release; a running daemon"
+        note "             keeps the old binary until its next restart"
+    else
+        note "backend:  whirl $WHIRL_VERSION is not installed; it will go into $daemon_prefix"
+    fi
     note "  fetching   $daemon_archive"
     fetch "$daemon_archive" "$work/daemon.tar.gz" ||
         refuse "cannot fetch $daemon_archive (is that release published, and the network up?)"
@@ -362,6 +490,18 @@ if [ "$daemon_action" = install ]; then
     fi
 fi
 
+if [ "$daemon_action" = reused ]; then
+    # A reused daemon is named too. This run installs no binary, but the receipt is what
+    # uninstall.sh reads, and naming the daemon here is what makes the app and the daemon
+    # one install at the other end.
+    for name in whirl whirld whirl-worker; do
+        daemon_path=$(daemon_binary "$name")
+        [ -n "$daemon_path" ] || continue
+        note "  binary     $daemon_path"
+        record binary "$daemon_path"
+    done
+fi
+
 if [ "$app_action" = install ]; then
     rm -rf "$work/app"
     mkdir -p "$work/app"
@@ -404,7 +544,9 @@ undo="sh uninstall.sh"
 note ""
 note "install: done"
 if [ "$daemon_action" = reused ]; then
-    note "  backend    reused, not touched: $daemon_found"
+    note "  backend    reused, not replaced: $daemon_found"
+elif [ -n "$daemon_replaced" ]; then
+    note "  backend    whirl $WHIRL_VERSION, replacing the older daemon at ${daemon_cli:-$daemon_found}"
 else
     note "  backend    whirl $WHIRL_VERSION, three binaries in $daemon_prefix"
 fi
@@ -413,10 +555,6 @@ if [ "$app_action" = present ]; then
 else
     note "  frontend   Whirl $WHIRL_UI_VERSION at $app"
 fi
-if [ "$daemon_action" = reused ] && [ "$app_action" = present ]; then
-    note "  undo       $undo"
-    note "             it removes the paths the receipt names, and leaves what this run reused"
-else
-    note "  undo       $undo"
-    note "             it removes what this run installed, and leaves what this run reused"
-fi
+note "  undo       $undo"
+note "             it removes the app and the daemon binaries the receipt names, and leaves the"
+note "             rest of the machine alone"
