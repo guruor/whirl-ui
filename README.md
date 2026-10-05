@@ -174,10 +174,6 @@ The release bundle is built by hand and by CI on a tag, from the same script:
 `scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
 downloaded copy is quarantined and its first launch needs the step named beside the download.
 
-The release bundle is built by hand and by CI on a tag, from the same script:
-`scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
-downloaded copy is quarantined and its first launch needs the step named beside the download.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
