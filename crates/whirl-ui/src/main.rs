@@ -66,9 +66,14 @@ modes:
                           add-folder <folder>       add a folder, deriving its id
                           add <id> <folder>         add a folder under a given id
                           set-folder <id> <folder>  point a source at a folder
-                          add-wallhaven [<id>]      a source pointing at the key
-                                                    label, with the id derived
-                                                    when it is left out
+                          add-wallhaven <url>       add a Wallhaven collection,
+                                                    deriving its id. The URL is
+                                                    the site's own address, its
+                                                    API address, or the pair
+                                                    <username>/<id>
+                          set-collection <id> <url>
+                                                    point a Wallhaven source at
+                                                    another collection
                           remove <id>
                           enable <id>               weight 1
                           disable <id>              weight 0
@@ -444,8 +449,19 @@ fn source_command(args: &[String]) -> ExitCode {
         "add-folder" if rest.len() == 1 => settings.add_folder(&rest[0]),
         "add" if rest.len() == 2 => settings.add_folder_as(&rest[0], &rest[1]),
         "set-folder" if rest.len() == 2 => settings.set_source_folder(&rest[0], &rest[1]),
-        "add-wallhaven" if rest.is_empty() => settings.add_wallhaven(),
-        "add-wallhaven" if rest.len() == 1 => settings.add_wallhaven_as(&rest[0]),
+        // Both Wallhaven verbs run the field's own code: the button opens the
+        // field, the terminal puts the address in it and presses Save, so what a
+        // script exercises is the control a person clicks.
+        "add-wallhaven" if rest.len() == 1 => {
+            settings.ask_for_collection();
+            settings.collection.url = rest[0].clone();
+            settings.save_collection();
+        }
+        "set-collection" if rest.len() == 2 => {
+            settings.edit_collection(&rest[0]);
+            settings.collection.url = rest[1].clone();
+            settings.save_collection();
+        }
         "remove" if rest.len() == 1 => settings.remove_source(&rest[0]),
         "enable" if rest.len() == 1 => settings.set_source_enabled(&rest[0], true),
         "disable" if rest.len() == 1 => settings.set_source_enabled(&rest[0], false),
@@ -474,8 +490,9 @@ fn source_command(args: &[String]) -> ExitCode {
 
 /// The verbs, as the usage line spells them.
 const VERBS: &str = "--source takes a verb: add-folder <folder>, add <id> <folder>, \
-                     set-folder <id> <folder>, add-wallhaven [<id>], remove <id>, \
-                     enable <id>, disable <id>, move <id> <up|down>, store-token, status";
+                     set-folder <id> <folder>, add-wallhaven <url>, set-collection <id> <url>, \
+                     remove <id>, enable <id>, disable <id>, move <id> <up|down>, store-token, \
+                     status";
 
 /// Which way a source moves, from the word a person typed.
 fn direction_of(argument: &str) -> Option<Direction> {
