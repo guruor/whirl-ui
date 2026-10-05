@@ -1,14 +1,24 @@
 //! The macOS menu bar item.
 //!
-//! An accessory app: a status item whose menu is the product, and a window that
-//! is a dialog behind one row of it. The dialog is the settings window [`app`]
-//! draws, so the `Settings…` row opens the one settings window this repository
-//! has, and closing it leaves the app up, which is the rule the standalone window
-//! already carried. Everything that reaches the socket does it through
-//! `whirlui-client`, so section 8's "must never" list holds by construction: this
-//! module writes no state file, calls no platform setter, and never starts, stops
-//! or restarts the daemon. It also never polls: one subscription is the only
-//! source of change, and the two threads below block on it and on a channel.
+//! A status item whose menu is the product, and a window that is a dialog behind
+//! one row of it. The dialog is the settings window [`app`] draws, so the
+//! `Settings…` row opens the one settings window this repository has, and closing
+//! it leaves the app up, which is the rule the standalone window already carried.
+//! Everything that reaches the socket does it through `whirlui-client`, so
+//! section 8's "must never" list holds by construction: this module writes no
+//! state file, calls no platform setter, and never starts, stops or restarts the
+//! daemon. It also never polls: one subscription is the only source of change,
+//! and the two threads below block on it and on a channel.
+//!
+//! The app is an agent, and only while its window is shut. It is built with the
+//! accessory activation policy and the bundle says `LSUIElement`, so it takes no
+//! Dock tile and nothing in the switcher -- and, because that is what an agent
+//! policy means, its windows are not managed by the window manager either. That
+//! last part is the defect the policy half of [`crate::window`] answers: the
+//! settings window was on screen, unfindable behind whatever was over it, and
+//! unreachable through Cmd+Tab. So the policy follows the window out of
+//! [`App::state_window`], and a `Settings…` click with the window already up
+//! raises the window it has instead of activating the process ([`App::logic`]).
 //!
 //! The shape is three pieces:
 //!
@@ -21,12 +31,12 @@
 //!   once the event loop is running (`tray-icon`'s own macOS requirement).
 //!
 //! The item's picture comes from [`crate::icon`], and it is the one thing here
-//! that changes without a menu rebuild: the two marks are template images, so
-//! macOS draws them from their alpha alone and inverts them for the menu bar's
-//! appearance, and the state decides which of the two is set. The mark is the
-//! item's whole label, which is why the item draws no title: what it is called
-//! is a tooltip and an accessible name (`ITEM_NAME`), and neither of those
-//! changes the item's width.
+//! that changes without a menu rebuild: the marks are template images, so macOS
+//! draws them from their alpha alone and inverts them for the menu bar's
+//! appearance, and the state decides which one is set. The mark is the item's
+//! whole label, which is why the item draws no title: what it is called is a
+//! tooltip and an accessible name (`ITEM_NAME`), and neither of those changes
+//! the item's width.
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -47,6 +57,7 @@ use crate::menu::{self, Action, Row, RowId};
 use crate::settings::Settings;
 use crate::settings::{WINDOW_SIZE, WINDOW_TITLE};
 use crate::state::View;
+use crate::window;
 
 /// How long to wait before trying an unreachable daemon again. The subscription
 /// already waits this long between reconnects; this is the same interval for the
@@ -352,9 +363,14 @@ pub fn run() -> ExitCode {
             .with_visible(false),
         event_loop_builder: Some(Box::new(|builder| {
             // The one thing eframe does not surface (whirl's
-            // docs/research/frontend-stack.md 3.4). Without it the app takes a
-            // Dock tile; the accessory policy below is what prevents that
-            // (`docs/milestones.md` M1 criterion 5, no Dock icon).
+            // docs/research/frontend-stack.md 3.4). This is the policy the app
+            // launches under, and it is the accessory one: a menu bar item
+            // starts with no Dock tile and nothing in the switcher, which is
+            // what the bundle's `LSUIElement` says too (`docs/milestones.md` M1
+            // criterion 5). It is not the policy for the app's whole life: this
+            // is the only place winit takes one, and it takes it once, so the
+            // window's own lifetime moves the app between the two from
+            // `App::state_window`, through `crate::window`.
             use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
             builder.with_activation_policy(ActivationPolicy::Accessory);
         })),
@@ -496,22 +512,42 @@ impl App {
         };
         self.stated = Some(visible);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(visible));
-        if visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
+
+        // The policy follows the window, and this is the pass where it changed.
+        // A regular app while the window is on screen: a Dock tile, a Cmd+Tab
+        // entry, and a window the window manager manages, which is what the
+        // raise below needs and what an agent app's window never had. Accessory
+        // again when it goes, so no Dock tile outlives the window (M1 criterion
+        // 5). The rule is `window::policy_for`, which is the one the test in
+        // `main.rs` asserts.
+        window::apply(window::policy_for(visible));
+
+        // Showing is a raise as well as a visibility change, and the raise is
+        // the window's rather than the app's: front, key and main, out of the
+        // Dock if it was minimised, and only then the app forward. It replaces
+        // the `Focus` viewport command this used to send, because that is one
+        // request in winit's terms (`focus_window`) and does not activate the
+        // process, which is the half that was missing. A `Settings…` click on a
+        // window that is already up takes the same path from `App::logic`; this
+        // is the click that opened it.
+        let raised = visible.then(|| window::raise(&window::AppKit));
+
         // One line per change, and no line at all from a pass that changed
         // nothing, so the log says which of the two states the window was in and
         // when. A window on screen with no dialog in it is this defect, and a log
         // that shows a launch with no `shown` line is what tells it from a
-        // launch that presented one.
+        // launch that presented one. The steps the raise took ride on the `shown`
+        // line, because they are what the app did and not what the desktop
+        // looked like.
         eprintln!(
-            "whirl-ui: {} the settings window is {}",
+            "whirl-ui: {} the settings window is {}{}",
             unix_nanos(),
             if visible {
                 "shown with its panes"
             } else {
                 "hidden: no dialog is open"
-            }
+            },
+            raised.map_or_else(String::new, |steps| format!(", raised {steps:?}"))
         );
     }
 }
@@ -641,8 +677,8 @@ impl eframe::App for App {
         }
 
         // The picture, for the same reason and on the same pass as the rows: a
-        // `Paused` event changes both, and the mark is what makes the state
-        // readable with the menu shut.
+        // `Paused` event or a daemon going out of reach changes both, and the
+        // mark is what makes the state readable with the menu shut.
         let mark = icon::Mark::of(&self.shared.view());
         if mark != self.mark {
             if let Some(tray) = self.tray.as_ref()
@@ -659,8 +695,20 @@ impl eframe::App for App {
         // The window a `Settings…` click asked for. Showing a viewport is this
         // thread's to do, which is why the command thread left the panes for this
         // pass instead of showing anything itself.
+        //
+        // A click with the window already up raises that window instead, and the
+        // panes the command thread read are dropped rather than put on screen:
+        // replacing the dialog's state would throw away whatever is half-edited
+        // in it, and a second window is not something this app has. Which of the
+        // two a click is, and what the raise does, is `window::settings_asked`.
         if let Some(panes) = self.shared.take_window_request() {
-            self.dialog.open_settings(panes);
+            match window::settings_asked(self.dialog.open(), &window::AppKit) {
+                Some(steps) => eprintln!(
+                    "whirl-ui: {} raised the settings window: {steps:?}",
+                    unix_nanos()
+                ),
+                None => self.dialog.open_settings(panes),
+            }
         }
 
         // The `Quit` row. `app` is told the app is going first, so the close sent

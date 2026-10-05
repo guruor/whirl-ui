@@ -4,7 +4,9 @@
 //!
 //! - **where the wallpapers come from** ([`Sources`]): one row per source, a
 //!   folder of the person's own pictures or Wallhaven's remote collection,
-//!   described in those words rather than in the schema's;
+//!   described in those words rather than in the schema's. A Wallhaven source
+//!   is added by the address of the collection to fetch, which is asked for
+//!   first and stays editable afterwards ([`CollectionField`], [`Row::line`]);
 //! - **how often they change** ([`Interval`]): a number and a unit, never the
 //!   raw interval the file stores and never a key name;
 //! - **whether whirl answered** ([`Daemon`]), one line, so nothing on screen
@@ -108,6 +110,19 @@ pub const ROTATION_LINE: &str = "how long each wallpaper stays before whirl chan
 pub const KEY_LINE: &str =
     "the key is saved in your system's password store and is never written to the config file";
 
+/// The collection field's heading, in a person's words rather than the schema's.
+pub const COLLECTION_TITLE: &str = "Wallhaven collection address";
+
+/// The collection field's own line: the three addresses a person can paste.
+///
+/// The forms are the ones a person actually holds, and they are the same three
+/// [`crate::config_file::COLLECTION_FORMS`] names in the refusal, so the field
+/// and the reason it gives agree word for word.
+pub const COLLECTION_LINE: &str = "paste the collection's address: https://wallhaven.cc/user/<username>/favorites/<id>, https://wallhaven.cc/api/v1/collections/<username>/<id>, or just <username>/<id>";
+
+/// The collection field's second line: when a key is needed, and when it is not.
+pub const COLLECTION_TOKEN_NOTE: &str = "a public collection needs no key; a private one, or one of your own account's, needs a key, which you can add once this is saved";
+
 /// The line under the daemon's: where a change is actually written.
 ///
 /// The window edits the config file and never the running daemon, and a person
@@ -172,6 +187,8 @@ pub struct Settings {
     pub picker: Option<Picker>,
     /// The Wallhaven key field, while it is open.
     pub key: KeyField,
+    /// The Wallhaven collection field, while it is open.
+    pub collection: CollectionField,
 }
 
 /// Whether whirl answered, as the one line the window carries about it.
@@ -227,6 +244,10 @@ pub enum Kind {
     },
     /// Wallhaven's remote collection.
     Wallhaven {
+        /// The collection's address as the file spells it: the daemon's own
+        /// `<username>/<id>` pair, or `None` when the file names none. It is
+        /// what the row shows, so what the window would write is visible first.
+        collection: Option<String>,
         /// What is known about its key.
         key: KeyState,
     },
@@ -274,8 +295,12 @@ impl Row {
                     format!("A folder on this Mac: {folder} (and {more} more)")
                 }
             }
-            Kind::Wallhaven { key } => {
-                format!("Wallhaven, a remote collection: {}", key.phrase())
+            Kind::Wallhaven { collection, key } => {
+                let address = collection.as_deref().unwrap_or("no URL yet");
+                format!(
+                    "Wallhaven, a remote collection: {address} ({})",
+                    key.phrase()
+                )
             }
         }
     }
@@ -297,6 +322,19 @@ impl Row {
     pub fn changeable_folder(&self) -> Option<&str> {
         match &self.kind {
             Kind::Folder { folders } if folders.len() == 1 => folders.first().map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// The collection address a Wallhaven row already reads, when the file names
+    /// one. This is what the row's `Change URL…` control opens the field on: the
+    /// address is edited rather than replaced from memory.
+    pub fn collection_url(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Wallhaven {
+                collection: Some(collection),
+                ..
+            } => Some(collection),
             _ => None,
         }
     }
@@ -442,6 +480,25 @@ pub struct KeyField {
     /// What has been typed. Never written to a file this window reads, never
     /// part of a line, and never printed by [`Settings::to_text`].
     pub token: String,
+}
+
+/// The Wallhaven collection field, while it is open.
+///
+/// It asks for the one thing a Wallhaven source cannot be added without: the
+/// address of the collection to fetch. The address is not a secret and is shown
+/// as typed; the key is the field beside it, and stays in [`KeyField`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CollectionField {
+    /// Whether the field is on screen.
+    pub open: bool,
+    /// The address as typed.
+    pub url: String,
+    /// The source this address is going to, or `None` when the field is adding a
+    /// new one.
+    pub for_source: Option<String>,
+    /// Why the address was refused, in the one sentence that names the accepted
+    /// forms, shown beside the field. `None` until a save was refused.
+    pub problem: Option<String>,
 }
 
 /// The folder chooser, while one is open.
@@ -692,6 +749,7 @@ impl Settings {
             interval,
             picker: None,
             key: KeyField::default(),
+            collection: CollectionField::default(),
         }
     }
 
@@ -795,28 +853,93 @@ impl Settings {
         self.record_sources("Add a folder", SAVED_FILE, result);
     }
 
-    /// Add a Wallhaven source, and open the field for its key.
+    /// Open the field that asks for a new Wallhaven source's collection address.
     ///
-    /// The source lands first and the key second, so a store that refuses leaves
-    /// the source on screen reading as one that needs a key rather than losing
-    /// the person's place.
-    pub fn add_wallhaven(&mut self) {
-        let id = self.free_id(WALLHAVEN);
-        self.add_wallhaven_as(&id);
+    /// Nothing is written yet: a Wallhaven source with no collection is a source
+    /// that names nothing to fetch, which is the defect this field exists to
+    /// answer. The source lands when the address does.
+    pub fn ask_for_collection(&mut self) {
+        self.collection = CollectionField {
+            open: true,
+            url: String::new(),
+            for_source: None,
+            problem: None,
+        };
     }
 
-    /// Add a Wallhaven source under an id the caller names, and open the key
-    /// field when it landed.
-    pub fn add_wallhaven_as(&mut self, id: &str) {
-        let document = config_file::wallhaven_source(id, keychain::LABEL);
-        let result = self
-            .writing_target()
-            .and_then(|path| config_file::add_source(path, document));
+    /// Open the field on the address an existing Wallhaven row already reads.
+    ///
+    /// The address is prefilled from the file, so the person changes it rather
+    /// than retyping it from memory.
+    pub fn edit_collection(&mut self, id: &str) {
+        let url = self
+            .sources
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.collection_url())
+            .unwrap_or_default()
+            .to_string();
+        self.collection = CollectionField {
+            open: true,
+            url,
+            for_source: Some(id.to_string()),
+            problem: None,
+        };
+    }
+
+    /// Land the address the field holds, and say what happened.
+    ///
+    /// The address is reduced to the daemon's own `<username>/<id>` pair before
+    /// anything is written, so a form the daemon would refuse never reaches the
+    /// file: the refusal is one sentence beside the field and the file is
+    /// untouched. A new source lands with its collection, and the key field is
+    /// offered next because the key is optional and the collection is not.
+    pub fn save_collection(&mut self) {
+        let adding = self.collection.for_source.is_none();
+        let control = if adding {
+            "Add Wallhaven"
+        } else {
+            "Change URL"
+        };
+        let pair = match config_file::collection_of(&self.collection.url) {
+            Ok(pair) => pair,
+            Err(reason) => {
+                self.collection.problem = Some(reason.clone());
+                self.sources.outcome = Some(Outcome::Refused {
+                    control: control.to_string(),
+                    reason,
+                });
+                return;
+            }
+        };
+        let result = match self.collection.for_source.clone() {
+            None => {
+                let id = self.free_id(WALLHAVEN);
+                let document = config_file::wallhaven_source(&id, keychain::LABEL, &pair);
+                self.writing_target()
+                    .and_then(|path| config_file::add_source(path, document))
+            }
+            Some(id) => self
+                .writing_target()
+                .and_then(|path| config_file::set_source_collection(path, &id, &pair)),
+        };
         let saved = result.is_ok();
-        self.record_sources("Wallhaven", SAVED_FILE, result);
+        self.record_sources(control, SAVED_FILE, result);
         if saved {
-            self.key.open = true;
+            self.collection.problem = None;
+            self.collection.open = false;
+            if adding {
+                // The key is the optional half: the source is on screen and in
+                // the file, and the field that adds the key opens beside it.
+                self.key.open = true;
+            }
         }
+    }
+
+    /// Close the collection field and change nothing.
+    pub fn cancel_collection(&mut self) {
+        self.collection = CollectionField::default();
     }
 
     /// Move a source one place in the file's order, and nothing at the edge.
@@ -1088,6 +1211,7 @@ impl Settings {
                         buttons.push("Change…");
                     }
                     if matches!(row.kind, Kind::Wallhaven { .. }) {
+                        buttons.push("Change URL…");
                         buttons.push("Enter key…");
                     }
                     buttons.push("Remove");
@@ -1110,6 +1234,17 @@ impl Settings {
         if self.key.open {
             out.push_str("  Wallhaven key [••••] [Save key] [Cancel]\n");
             out.push_str(&format!("  {KEY_LINE}\n"));
+        }
+        if self.collection.open {
+            out.push_str(&format!(
+                "  {COLLECTION_TITLE} [{}] [Save] [Cancel]\n",
+                self.collection.url
+            ));
+            out.push_str(&format!("  {COLLECTION_LINE}\n"));
+            out.push_str(&format!("  {COLLECTION_TOKEN_NOTE}\n"));
+            if let Some(problem) = &self.collection.problem {
+                out.push_str(&format!("  {problem}\n"));
+            }
         }
 
         out.push('\n');
@@ -1168,6 +1303,7 @@ fn rows_of(sources: &[FileSource]) -> Vec<Row> {
                 .get_or_insert_with(|| keychain::exists().map_err(|error| error.to_string()))
                 .clone();
             Kind::Wallhaven {
+                collection: source.collection.clone(),
                 key: key_state(source.key_ref.as_deref(), exists),
             }
         } else {
@@ -1523,20 +1659,136 @@ mod tests {
     }
 
     #[test]
-    fn adding_wallhaven_opens_the_key_field_and_the_source_needs_a_key() {
+    fn asking_for_a_wallhaven_collection_lands_the_address_and_then_offers_the_key() {
         let (mut settings, path) = window_from("add-wallhaven", CONFIG);
-        settings.add_wallhaven();
+        // The button opens the field and writes nothing yet: a source with no
+        // collection is what this field exists to prevent.
+        settings.ask_for_collection();
+        assert!(settings.collection.open, "the field opens on the button");
+        assert!(settings.collection.for_source.is_none());
         assert!(
-            settings.key.open,
-            "the key field opens beside the new source"
+            !settings.key.open,
+            "nothing is written until the address is"
         );
+
+        settings.collection.url = "https://wallhaven.cc/user/alice/favorites/12345".to_string();
+        settings.save_collection();
+
+        assert!(
+            !settings.collection.open,
+            "the field closes once the address lands"
+        );
+        assert!(settings.key.open, "the optional key is offered next");
         let row = settings.sources.rows.last().expect("the new source");
-        assert_eq!(row.id, "wallhaven");
+        assert_eq!(row.id, "wallhaven", "the id is derived from the kind");
+        assert_eq!(row.collection_url(), Some("alice/12345"));
+        // The pair is the row's description, so what was written is visible.
+        // Whether a key is saved is a fact about this machine, so the key half
+        // is asserted only up to where the two answers differ.
+        assert!(
+            row.line()
+                .starts_with("Wallhaven, a remote collection: alice/12345 ("),
+            "{}",
+            row.line()
+        );
         let landed = std::fs::read_to_string(&path).expect("the file");
-        // The label, which is a name, and never a key.
+        assert!(
+            landed.contains(r#""collection": "alice/12345""#),
+            "{landed}"
+        );
         assert!(
             landed.contains(&format!("\"api_key_ref\": \"{}\"", keychain::LABEL)),
             "{landed}"
+        );
+        // The address that reached the file is the daemon's own value, not the
+        // URL the person pasted.
+        assert!(!landed.contains("wallhaven.cc"), "{landed}");
+    }
+
+    #[test]
+    fn an_address_that_is_not_a_collection_is_refused_beside_the_field() {
+        let (mut settings, path) = window_from("bad-collection", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+        settings.ask_for_collection();
+        settings.collection.url = "https://wallhaven.cc/search?q=nebula".to_string();
+        settings.save_collection();
+
+        assert!(settings.collection.open, "the field stays open to be fixed");
+        let problem = settings
+            .collection
+            .problem
+            .clone()
+            .expect("a reason beside the field");
+        // The one sentence names every accepted form.
+        for form in [
+            "https://wallhaven.cc/user/<username>/favorites/<id>",
+            "https://wallhaven.cc/api/v1/collections/<username>/<id>",
+            "<username>/<id>",
+        ] {
+            assert!(problem.contains(form), "{problem}");
+        }
+        let line = settings
+            .sources
+            .outcome
+            .as_ref()
+            .expect("an outcome")
+            .line();
+        assert!(
+            line.starts_with("Add Wallhaven: nothing was saved"),
+            "{line}"
+        );
+        // Nothing was written: no source was added and the file is as it was.
+        assert_eq!(
+            settings.sources.rows.len(),
+            2,
+            "{:?}",
+            settings.sources.rows
+        );
+        assert_eq!(std::fs::read(&path).expect("the file"), before);
+        let text = settings.to_text();
+        assert!(text.contains(COLLECTION_TOKEN_NOTE), "{text}");
+    }
+
+    #[test]
+    fn an_existing_collection_address_can_be_changed_and_the_key_survives() {
+        let (mut settings, path) = window_from("change-url", CONFIG);
+        // `space` names a key and no collection yet: the field opens empty.
+        settings.edit_collection("space");
+        assert!(settings.collection.open);
+        assert_eq!(settings.collection.for_source.as_deref(), Some("space"));
+        assert_eq!(settings.collection.url, "");
+
+        settings.collection.url = "alice/999".to_string();
+        settings.save_collection();
+
+        assert_eq!(settings.sources.rows[1].collection_url(), Some("alice/999"));
+        assert!(
+            settings.sources.rows[1]
+                .line()
+                .starts_with("Wallhaven, a remote collection: alice/999 ("),
+            "{}",
+            settings.sources.rows[1].line()
+        );
+        let landed = std::fs::read_to_string(&path).expect("the file");
+        assert!(landed.contains(r#""collection": "alice/999""#), "{landed}");
+        // Every key the edit did not own is exactly as it was.
+        assert!(
+            landed.contains(&format!("\"api_key_ref\": \"{}\"", keychain::LABEL)),
+            "{landed}"
+        );
+        assert!(landed.contains("\"_comment_1\""), "{landed}");
+        assert!(landed.contains("\"/tmp/walls\""), "{landed}");
+
+        // Editing again opens on the address the file now holds, so it is
+        // changed rather than retyped from memory.
+        settings.edit_collection("space");
+        assert_eq!(settings.collection.url, "alice/999");
+        settings.cancel_collection();
+        assert!(!settings.collection.open);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file"),
+            landed,
+            "a cancel writes nothing"
         );
     }
 

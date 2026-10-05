@@ -47,17 +47,24 @@ serde_json = { version = "1", features = ["preserve_order"] }
 #
 # The tray. `tray-icon` is the status item and its menu; `winit` is here for one
 # call that eframe does not surface: the macOS activation policy (see `tray.rs`),
-# which is what keeps the app out of the Dock. It is the same 0.30 line eframe
+# which is the policy the app launches under, and the one winit takes -- once,
+# from the event loop builder. It is the same 0.30 line eframe
 # itself depends on, so it is one crate and not two.
 #
-# The `objc2` bindings are here for the item's accessible name. `tray-icon` sets
-# the tooltip but exposes no call for the accessibility label, and a status
-# button with no title has no accessible name at all, so the one setter the
-# crate does expose (`TrayIcon::ns_status_item`) is called through the same
-# bindings `tray-icon` is built on: the same versions, already in the graph, and
-# the accessibility protocol is the feature that carries the setter.
+# The `objc2` bindings are here for the item's accessible name, and for the two
+# things about a window that eframe has no surface for: the activation policy,
+# and the AppKit calls a raise makes (`crate::window`). `tray-icon` sets the
+# tooltip but exposes no call for the accessibility label, and a status button
+# with no title has no accessible name at all, so the one setter the crate does
+# expose (`TrayIcon::ns_status_item`) is called through the same bindings
+# `tray-icon` is built on: the same versions, already in the graph, and the
+# accessibility protocol is the feature that carries the setter. `NSApplication`
+# and `NSRunningApplication` are what carry `setActivationPolicy` -- winit takes
+# an activation policy once, from the event loop builder, and has no call for a
+# second -- and `NSWindow` is what carries `orderFront`, `makeKeyAndOrderFront`
+# and `deminiaturize`.
 #
-# The folder panel is the second use of the same bindings, and the reason its
+# The folder panel is the third use of the same bindings, and the reason its
 # features are listed below. `settings::ask_the_panel` is one call to
 # `NSOpenPanel`, and these features are the classes it stands on: `NSOpenPanel`
 # and its `NSSavePanel`/`NSPanel`/`NSWindow`/`NSResponder` superclasses, plus
@@ -75,6 +82,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSOpenPanel",
     "NSPanel",
     "NSResponder",
+    "NSRunningApplication",
     "NSSavePanel",
     "NSStatusBarButton",
     "NSStatusItem",

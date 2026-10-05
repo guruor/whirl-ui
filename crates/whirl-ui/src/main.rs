@@ -31,6 +31,7 @@ mod state;
 mod theme;
 #[cfg(target_os = "macos")]
 mod tray;
+mod window;
 
 use std::env;
 use std::io::Read;
@@ -66,9 +67,14 @@ modes:
                           add-folder <folder>       add a folder, deriving its id
                           add <id> <folder>         add a folder under a given id
                           set-folder <id> <folder>  point a source at a folder
-                          add-wallhaven [<id>]      a source pointing at the key
-                                                    label, with the id derived
-                                                    when it is left out
+                          add-wallhaven <url>       add a Wallhaven collection,
+                                                    deriving its id. The URL is
+                                                    the site's own address, its
+                                                    API address, or the pair
+                                                    <username>/<id>
+                          set-collection <id> <url>
+                                                    point a Wallhaven source at
+                                                    another collection
                           remove <id>
                           enable <id>               weight 1
                           disable <id>              weight 0
@@ -444,8 +450,19 @@ fn source_command(args: &[String]) -> ExitCode {
         "add-folder" if rest.len() == 1 => settings.add_folder(&rest[0]),
         "add" if rest.len() == 2 => settings.add_folder_as(&rest[0], &rest[1]),
         "set-folder" if rest.len() == 2 => settings.set_source_folder(&rest[0], &rest[1]),
-        "add-wallhaven" if rest.is_empty() => settings.add_wallhaven(),
-        "add-wallhaven" if rest.len() == 1 => settings.add_wallhaven_as(&rest[0]),
+        // Both Wallhaven verbs run the field's own code: the button opens the
+        // field, the terminal puts the address in it and presses Save, so what a
+        // script exercises is the control a person clicks.
+        "add-wallhaven" if rest.len() == 1 => {
+            settings.ask_for_collection();
+            settings.collection.url = rest[0].clone();
+            settings.save_collection();
+        }
+        "set-collection" if rest.len() == 2 => {
+            settings.edit_collection(&rest[0]);
+            settings.collection.url = rest[1].clone();
+            settings.save_collection();
+        }
         "remove" if rest.len() == 1 => settings.remove_source(&rest[0]),
         "enable" if rest.len() == 1 => settings.set_source_enabled(&rest[0], true),
         "disable" if rest.len() == 1 => settings.set_source_enabled(&rest[0], false),
@@ -474,8 +491,9 @@ fn source_command(args: &[String]) -> ExitCode {
 
 /// The verbs, as the usage line spells them.
 const VERBS: &str = "--source takes a verb: add-folder <folder>, add <id> <folder>, \
-                     set-folder <id> <folder>, add-wallhaven [<id>], remove <id>, \
-                     enable <id>, disable <id>, move <id> <up|down>, store-token, status";
+                     set-folder <id> <folder>, add-wallhaven <url>, set-collection <id> <url>, \
+                     remove <id>, enable <id>, disable <id>, move <id> <up|down>, store-token, \
+                     status";
 
 /// Which way a source moves, from the word a person typed.
 fn direction_of(argument: &str) -> Option<Direction> {
@@ -678,23 +696,54 @@ mod tests {
         assert_eq!(Snap::parse(""), None);
     }
 
-    /// The app is a menu bar item with a dialog, not a windowed application: it
-    /// asks macOS for an accessory activation policy and never for a regular one,
-    /// so it takes no Dock tile (M1 criterion 5). A Dock tile is a different
-    /// product, and this is the assertion that a restyle did not introduce one.
+    /// The app is a menu bar item with a dialog, and the Dock tile belongs to
+    /// the window.
     ///
-    /// It reads the crate's own sources because the property has no runtime
-    /// surface a headless test can reach: the policy is decided once, by a winit
-    /// builder, before a window exists. The needle is assembled rather than
-    /// written out, so the assertion is not satisfied by its own text.
+    /// The rule is conditional, and it changed. The app used to ask for the
+    /// accessory policy and never for a regular one, on the reading that a Dock
+    /// tile is a different product. That reading got the second half right and
+    /// the first half wrong: an agent app's windows are not managed by the
+    /// window manager, so the settings window could not be raised once another
+    /// app was over it, and the app had no Cmd+Tab entry to be switched back to.
+    /// The window was on screen and unfindable, which is the defect this
+    /// asserts against. So the policy follows the window -- accessory while none
+    /// is open (M1 criterion 5's no-permanent-Dock-tile rule, which is exactly
+    /// what the old assertion was protecting and it is kept), regular while one
+    /// is -- and this test states both halves rather than the accidental first
+    /// one.
+    ///
+    /// It reads the crate's own sources for the second half because that half
+    /// has no runtime surface a headless test can reach: the policy is applied
+    /// from a pass, against a window server a test has not got. The needles are
+    /// assembled rather than written out, so an assertion is not satisfied by
+    /// its own text.
     #[test]
-    fn the_app_still_asks_for_no_dock_tile() {
-        let regular = ["ActivationPolicy", "::", "Regular"].concat();
+    fn the_app_is_a_regular_app_only_while_a_window_is_open() {
+        // The rule itself, both directions, from the value the two call sites
+        // share.
+        assert_eq!(
+            window::policy_for(false),
+            window::Policy::Accessory,
+            "no window: no Dock tile, and nothing in the switcher"
+        );
+        assert_eq!(
+            window::policy_for(true),
+            window::Policy::Regular,
+            "a window on screen: a Dock tile, and an entry in the switcher"
+        );
+
+        // The app still starts as an agent: the bundle's `LSUIElement` (see
+        // scripts/make-bundle.sh) and the policy the event loop is built with.
         let tray = include_str!("tray.rs");
         assert!(
             tray.contains("ActivationPolicy::Accessory"),
-            "the app asks macOS for the accessory policy"
+            "the app asks macOS for the accessory policy at launch"
         );
+
+        // And the only place that asks for a regular policy is the window's own
+        // open and close path, which is `window.rs`: nothing else may give the
+        // app a permanent Dock tile.
+        let regular = ["ActivationPolicy", "::", "Regular"].concat();
         for (name, source) in [
             ("main.rs", include_str!("main.rs")),
             ("app.rs", include_str!("app.rs")),
@@ -702,8 +751,13 @@ mod tests {
         ] {
             assert!(
                 !source.contains(&regular),
-                "{name} asks for a regular activation policy, which is what gives the app a Dock tile"
+                "{name} asks for a regular activation policy, which is what gives the app a \
+                 Dock tile outside the window's own lifetime"
             );
         }
+        assert!(
+            include_str!("window.rs").contains(&regular),
+            "the window's own path is the one place that asks for a regular activation policy"
+        );
     }
 }

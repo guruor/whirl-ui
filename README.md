@@ -1,20 +1,24 @@
-# whirl-ui
+<img src="crates/whirl-ui/assets/app-icon-256.png" height="96" alt="Whirl">
 
-A lightweight tray frontend for the [whirl](https://github.com/guruor/whirl) wallpaper daemon.
+# Whirl
 
-The daemon is headless. It owns the wallpaper, the rotation, the sources and every piece of state, and
-it exposes no user interface at all: its interface is the socket protocol on the other side of which
-it listens. This app is an ordinary client of that protocol. It connects, reads `status`, follows
-`subscribe` for change notification and prints what the daemon reports, which means it writes no state
-file, calls no platform setter, never starts, stops or restarts the daemon, and holds no copy of the
-configuration it did not read back through the protocol. The whole of its obligation to the daemon is
-whirl's [`docs/architecture.md` section
+Wallpaper that rotates on a schedule, from folders you choose, from the menu bar.
+
+[![ci](https://github.com/guruor/whirl-ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/guruor/whirl-ui/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/guruor/whirl-ui)](https://github.com/guruor/whirl-ui/releases)
+[![licence](https://img.shields.io/github/license/guruor/whirl-ui)](LICENSE)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
+
+![The Sources pane: one folder of wallpapers, switched on](docs/assets/app-sources.png)
+
+Whirl puts the [whirl](https://github.com/guruor/whirl) wallpaper daemon on the menu bar. The daemon is
+headless: it owns the wallpaper, the rotation, the sources and every piece of state, and this app is an
+ordinary client of it, which owns none of that. The app writes no state file, calls no platform setter,
+and never starts, stops or restarts the daemon; it holds no copy of the configuration it did not read
+back through the protocol. Its whole obligation to the daemon is whirl's
+[`docs/architecture.md` section
 8](https://github.com/guruor/whirl/blob/main/docs/architecture.md#8-frontend-contract), "Frontend
 contract", which lists what a frontend may rely on and what it must never do.
-
-The tray is **macOS first**. macOS-only code is gated behind `#[cfg(target_os = "macos")]` so that the
-Linux and Windows builds compile the same workspace and stay green while those platforms are
-unfinished.
 
 ## Install
 
@@ -36,159 +40,52 @@ and why rather than driving or dismissing that dialog. Whirl is not notarized, s
 report that macOS cannot check it: open it once from Applications and allow it under
 System Settings > Privacy & Security if asked.
 
-The script prints what it installed, what it skipped and why, and the one command that undoes it. What
-it installed is recorded in a receipt (`WHIRL_UI_RECEIPT`, by default
+What was installed is recorded in a receipt (`WHIRL_UI_RECEIPT`, by default
 `~/Library/Application Support/whirl-ui/install.receipt`), and `uninstall.sh` removes the paths in that
-receipt and nothing else: a daemon or app that was already here was reused, not installed, and both
-scripts leave it alone. `uninstall.sh` never kills a process it did not start - it stops the daemon
-only through whirl's own command - and it names what it deliberately leaves alone: the daemon's config,
+receipt and nothing else; the script prints that one undo command when it finishes. A daemon or app
+that was already here was reused, not installed, and both scripts leave it alone: `uninstall.sh` never
+kills a process it did not start, and it names what it deliberately leaves alone, the daemon's config,
 state, cache and log. The daemon's own login unit is whirl's to install and whirl's to remove, so
-neither script writes a unit file.
+neither script writes a unit file. [`docs/installation.md`](docs/installation.md) is the long version:
+both routes step by step, and the paths either one touches.
 
-## Signing, and the one approval
+## Features
 
-`Whirl.app` has no Developer ID and is not notarized, so macOS refuses a copy that arrived from the
-network in the assessment it runs on one:
+- Rotation on a schedule. The interval is the daemon's; the app shows the one in use.
+- Sources from your own folders, and Wallhaven's collection, each switched on or off without leaving
+  the config file.
+- Three menu bar states: running, paused, and the daemon unreachable, where the item says so and the
+  rows that need the daemon are disabled.
+- Start at login, through the app's own login item.
+- No account, and no telemetry.
+- The app is optional: whirl runs and rotates the wallpaper without it, and keeps rotating if the app
+  is quit.
 
-    $ spctl -a -vv Whirl.app
-    Whirl.app: rejected
-    origin=Whirl Local Signing
+## How it fits together
 
-That verdict is not going to change, an app that is not notarized is `rejected` however it is signed,
-and the row that matters is a different one. What is worth fixing is the *designated requirement*: the
-identity macOS records a launch approval against, and compares the next time the same app is opened.
-Signed ad-hoc (`codesign --sign -`) that requirement is the hash of the binary, so two builds of one
-source are two different apps:
-
-    $ codesign -d -r- /tmp/one/Whirl.app    # two successive builds of one source
-    designated => cdhash H"f807a30cb6e7a156d41df81055754cf78d3c0254"
-    $ codesign -d -r- /tmp/two/Whirl.app
-    designated => cdhash H"53e3d463c1758ef0991ea1306ab194f8cb29a8e2"
-
-An approval given to the first build says nothing about the second. One certificate, created once,
-replaces the ad-hoc `-`:
-
-    scripts/make-signing-identity.sh          # create it in the login keychain; idempotent, no sudo
-    scripts/make-signing-identity.sh status   # say whether builds are signed with it or ad-hoc
-    scripts/make-signing-identity.sh delete   # remove the certificate and its private key
-
-The same two builds, signed with it, carry the same requirement, because neither half of it moves when
-the binary does:
-
-    designated => identifier "com.guruor.whirl-ui" and certificate leaf = H"0d1b75e7d9ef4a65ec2f48d4c6fb3a0e954e3936"
-
-The certificate lives in the login keychain because that is the keychain codesign searches: `--keychain
-<path>` for a keychain that is not on the search list reports `no identity found`, so a keychain of the
-script's own would not be usable. The private key is generated by the script, stays in the keychain,
-and is never written into this repository or printed. The certificate is self-signed and untrusted,
-which is enough for this: it is not a Developer ID and it says nothing about who built the app.
-`WHIRL_SIGNING_KEYCHAIN=<path>` points the script at another keychain, for a throwaway one in a test.
-
-`scripts/make-bundle.sh` signs with that identity when it is there and ad-hoc when it is not, which is
-the case on a release runner and in a fresh checkout, and it says which of the two it used.
-
-`delete` is `security delete-identity`, which takes the certificate and its private key together.
-`security delete-certificate -c "Whirl Local Signing" ~/Library/Keychains/login.keychain-db` removes
-the certificate on its own and leaves the private key behind in the keychain, which was measured by
-deleting the certificate, re-importing it, and watching the identity come back.
-
-Install, then run it from where it was installed rather than from a build tree:
-
-    sh install.sh
-    open /Applications/Whirl.app
-
-`install.sh` replaces that copy rather than leaving another beside it, so there is one `Whirl.app` on
-the machine. A copy that was built, or installed, on this machine is not quarantined: `xattr -l` shows
-only `com.apple.provenance`, macOS has nothing to assess, and the first launch asks nothing.
-
-A copy that arrived through a browser or an archive is the one that carries quarantine, and its first
-launch is the one that asks. Verify it against the checksum the release published, then clear the flag:
-
-    shasum -a 256 -c Whirl-0.1.0.zip.sha256
-    xattr -dr com.apple.quarantine /Applications/Whirl.app
-
-The checksum is what makes that safe: it proves the file is the one the release built, and the flag is
-cleared only after the check, never before it. `install.sh` clears the flag too, after its own checksum
-check; its download goes through `curl`, which does not set the flag itself, so that step is there for
-a copy that arrived some other way.
-
-## Layout
-
-    crates/whirlui-client/   the protocol client (library)
-    crates/whirl-ui/         the tray app (binary)
-
-## Build and run
-
-Install Rust with [rustup](https://rustup.rs). The toolchain is pinned in `rust-toolchain.toml`, so
-rustup installs the right compiler and components on first use; no other setup step is needed.
-
-    cargo build --workspace                                  # build both crates
-    cargo run                                                # build and run the app
-    cargo test --workspace                                   # run the test suite
-    cargo fmt --all -- --check                               # the formatting gate
-    cargo clippy --workspace --all-targets -- -D warnings    # the lint gate, warnings denied
-
-The one thing the suite cannot assert is the menu bar launch itself, because it needs a window server.
-A maintainer checks it on a Mac:
-
-    scripts/check-launch-window.sh    # fails if the app shows a window with no dialog open
-
-The app talks to a running daemon, and it will not start one for you: build and run `whirld` from the
-[whirl repository](https://github.com/guruor/whirl) first. With no daemon reachable it has nothing to
-show and says so.
-
-## Modes
-
-With no arguments the app starts its menu bar item (macOS), whose `Settings…` row opens the settings
-window. A window cannot be asserted by a test, so every question it answers is also answerable from a
-terminal, in the daemon's own words rather than in a format invented here:
-
-    cargo run -- --dump-status         # the daemon's status, key by key
-    cargo run -- --dump-sources        # each source's enabled state and the reason it has one
-    cargo run -- --dump-config-check   # the effective plan the daemon adopted
-    cargo run -- --dump-settings       # what the settings window shows, as text
-    cargo run -- --screenshot shot.png # run the window, write it to a PNG, and exit
-    cargo run -- --check-update        # the About pane's release check, one line
-    cargo run -- --login-item status   # the app's own login item, as macOS reports it
-
-`--login-item` takes `status`, `register` or `unregister`, and every verb ends by printing the status, so
-a before and an after are the same two lines. It is about the *app's own bundle*, which is what macOS
-registers a login item for: from `Whirl.app` it registers that app, and from a bare binary it refuses and
-names the executable it looked at. `scripts/make-bundle.sh` is what writes `Whirl.app`.
-
-The dump modes exit 0 on success, 1 if the daemon refused, 2 if it is unreachable and 3 if the command
-line cannot work. `--dump-settings` prints its four panes with no daemon too, where each one renders
-the reason it has nothing to show: a pane that showed an empty list would be saying something untrue.
-
-The About pane says what the app is, which build is running, where its source lives and whether the
-daemon is connected. The version is read from the app bundle's `Info.plist`
-(`CFBundleShortVersionString`), and both it and the string the binary itself reports are shown when
-they disagree, because a build installed over another is exactly that disagreement. Its `Check for a
-newer release` button makes one anonymous `GET` to this repository's published releases: nothing
-schedules it, nothing is sent but the request, and a check that could not be made says so rather than
-reading as up to date. `--check-update` makes the same call from a terminal.
-
-`--screenshot` writes the window's own pixels rather than the screen's, so the file carries the window
-and nothing else that happened to be on the machine.
-
-If a version manager injects `RUSTUP_TOOLCHAIN`, the file above stops winning and a different compiler
-is used. Run cargo without that variable and with rustup first on `PATH` to restore the pin:
-
-    env -u RUSTUP_TOOLCHAIN PATH="$HOME/.cargo/bin:$PATH" cargo test --workspace
+The daemon and the app are two programs and one socket. The daemon listens, owns the state and does the
+rotating; the app connects to the socket, reads `status`, follows `subscribe` for change notification
+and sends the daemon's own verbs back to it. The app is an ordinary client with no privileged access
+and no side channel, and whirl's
+[`docs/architecture.md` section
+8](https://github.com/guruor/whirl/blob/main/docs/architecture.md#8-frontend-contract) is the contract
+it is written to.
 
 ## Docs
 
-    docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
-    docs/design.md        the visual language, and what each element the design draws would cost in config
-    docs/installation.md  both install routes step by step: one command, and the same work by hand
-    docs/releases/v0.1.0.md  what this build is, what its first launch needs, and what it does not do
-    scripts/make-bundle.sh  Whirl.app, signed with the local identity, and the archive a release carries
-    scripts/make-signing-identity.sh  the self-signed identity the bundle is signed with, created once
+- [`docs/installation.md`](docs/installation.md): both install routes, step by step.
+- [`docs/design.md`](docs/design.md): the visual language, and what each element the design draws would
+  cost in config.
+- [`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md): what this build is, what its first launch needs,
+  and what it does not do.
+- [whirl's docs](https://github.com/guruor/whirl/tree/main/docs): the daemon's own side of the socket,
+  its architecture and its protocol.
 
-The release bundle is built by hand and by CI on a tag, from the same script:
-`scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
-downloaded copy is quarantined and its first launch needs the step named beside the download.
+## Contributing
 
-## License
+Development material lives in [`CONTRIBUTING.md`](CONTRIBUTING.md): the toolchain, the checks a pull
+request must pass, the verify verbs and the release path.
+
+## Licence
 
 MIT. See [LICENSE](LICENSE).

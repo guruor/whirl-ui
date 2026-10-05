@@ -1,0 +1,10 @@
+<!-- The unreachable mark: the whirl's outer turn with a break in it, for a
+     daemon this app cannot reach. One drawing in the same 16x16 box as mark.svg
+     and mark-paused.svg, and it inks the same pixels of that box, so the menu
+     bar item's width is that of a single mark in every state. The break is in
+     the silhouette rather than a stroke laid over the whirl, because at the
+     16 px the item draws, a diagonal line smears into the shape it crosses and
+     a missing segment does not. Drawn for this repository; see README.md here. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="512" height="512">
+  <path d="M2.3253 9.3101 A5.824 5.824 0 1 1 6.6899 13.6747" fill="none" stroke="#000000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
