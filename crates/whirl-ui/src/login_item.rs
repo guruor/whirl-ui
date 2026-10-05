@@ -29,6 +29,13 @@
 /// Settings, and "not found" is a question macOS could not answer at all. Folding
 /// any two of them into one word would hide the one thing a reader needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        reason = "the variants are only constructed through `State::of`, which reads macOS's `SMAppService` numbers; `Status` carries a `State` on every platform, so the type is compiled here and nothing but this module's test builds a value off macOS"
+    )
+)]
 pub enum State {
     /// No registration, or one that was unregistered.
     NotRegistered,
@@ -47,6 +54,13 @@ impl State {
     /// The numbers are the ones in `SMAppServiceStatus`, and `None` rather than a
     /// guessed mapping: a status macOS grows in a future release is a fact this
     /// build has not been told about, and saying so is the only honest answer.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(
+            dead_code,
+            reason = "the numbers it maps are `SMAppService`'s, so only the macOS build calls it; its other caller is this module's own test, and use inside `#[cfg(test)]` does not count in a non-test build"
+        )
+    )]
     pub fn of(raw: isize) -> Option<State> {
         match raw {
             0 => Some(State::NotRegistered),
