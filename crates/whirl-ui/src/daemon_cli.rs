@@ -185,6 +185,11 @@ fn pick(first: &str, second: &str) -> String {
 }
 
 /// What the person answered in the quit question.
+///
+/// The question is the tray's, and the tray is macOS-only, so the two other
+/// legs compile this type and the plan below and never reach them. The tests
+/// here are the second caller on every platform that can run them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS quit question and by the tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuitAnswer {
     /// The box was left unchecked: the app closes and the daemon keeps running.
@@ -199,6 +204,7 @@ pub enum QuitAnswer {
 /// not asked and the quit behaves as remembered. A quit that has no remembered
 /// answer takes the checkbox as its answer, and remembers it only when the
 /// suppression box was ticked too.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS quit question and by the tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuitPlan {
     /// Whether to ask `whirl daemon stop` before the app closes.
@@ -209,6 +215,7 @@ pub struct QuitPlan {
 }
 
 /// The plan for a quit, from what was remembered and what this quit answered.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS quit question and by the tests.
 pub fn quit_plan(remembered: Option<bool>, answer: QuitAnswer, remember: bool) -> QuitPlan {
     match remembered {
         Some(stop) => QuitPlan {

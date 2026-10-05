@@ -111,6 +111,7 @@ fn stderr_of(output: &std::process::Output) -> String {
 /// `NSUserDefaults` writes this suite to `~/Library/Preferences/<name>.plist`;
 /// there is no way to point it anywhere else, so the name carries this process's
 /// id and the test removes the file it made (`forget_suite`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the prefs tests, which need the macOS store.
 fn suite(tag: &str) -> String {
     format!("com.guruor.whirl-ui.tests.{tag}.{}", std::process::id())
 }
@@ -123,6 +124,7 @@ fn suite(tag: &str) -> String {
 /// `defaults` reports the domain as not found while the file is right there. The
 /// file is the whole of what this test created, and removing it is the whole of
 /// the cleanup.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the prefs tests, which need the macOS store.
 fn forget_suite(name: &str) {
     if let Some(home) = std::env::var_os("HOME") {
         let plist = PathBuf::from(home)

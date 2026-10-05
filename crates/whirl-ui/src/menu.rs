@@ -223,6 +223,7 @@ pub fn rows(view: &View) -> Vec<Row> {
 /// that was done), which is the app's own report and not a row of the daemon's
 /// menu: `--menu-dump` prints the rows without it, and the tray draws it only
 /// when there is something to say.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS tray, which is the only caller.
 pub fn rows_reporting(view: &View, report: Option<&str>) -> Vec<Row> {
     let mut rows = rows(view);
     if let Some(text) = report {
