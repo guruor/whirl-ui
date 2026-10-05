@@ -56,32 +56,39 @@ restart one click away (its release notes list "the ability to restart Karabiner
 menu", <https://karabiner-elements.pqrs.org/docs/releasenotes/>).
 
 The constraint the pattern has to fit: the app must not restart the daemon itself. The frontend
-contract's "must never" item 3 is "Start, stop or restart the daemon" (whirl
-`docs/architecture.md` §8, lines 1798-1800), and the reason is that the OS supervisor owns the
-daemon's lifetime (§5.1, lines 1534-1552). Running the daemon's own step is the one route that is
-not "being the supervisor": whirl's ADR 0002, decision 3, narrows the rule to its reason and reads
-it as "a frontend is never the supervisor" (`docs/decisions/0002-frontends-write-config-own-no-daemon.md`,
-lines 343-392, and the implied change to §8 at lines 550-553), so the app may run the product's own
-start/stop step but must never call `launchctl`, `systemctl` or `schtasks` itself (ADR 0002,
-lines 360-361 and 464-469).
+contract's "must never" item 3 is that a frontend never spawns a daemon of its own, because the OS
+supervisor owns the daemon's lifetime (whirl `docs/architecture.md` §8 "must never" 3, lines
+1865-1871, and §5.1, lines 1551-1572). Running the daemon's own step is the one route that is not
+"being the supervisor": whirl's ADR 0002, decision 3, narrows the rule to its reason and reads it as
+"a frontend is never the supervisor" (`whirl
+docs/decisions/0002-frontends-write-config-own-no-daemon.md:343-393`, the narrowing shipped as §8
+"must never" 3 at `whirl docs/architecture.md:1865-1871`, and the implied change that writes it at
+`:550-553`), so the app may run the product's own step but must never call `launchctl`, `systemctl`
+or `schtasks` itself (ADR 0002, lines 360-361 and 507-511).
 
-The step is `whirl service stop && whirl service start`, and deliberately **not** `whirl daemon
-stop|start`: no `daemon` verb exists or will (`daemon start|stop|restart` are non-goals,
-`whirl docs/spec/features.md:69` and `whirl docs/architecture.md:178-182`), so a design that asked
-the app to run one would ask it to run a command the product does not have.
+The step is `whirl daemon stop` then `whirl daemon start`, the daemon's own lifecycle pair. `whirl
+daemon` is the CLI's five-subcommand group: `install`, `uninstall`, `start`, `stop`, `status`. Its
+`start` and `stop` are two of the steps the frontend contract names as a frontend's to run
+(whirl `crates/whirl-cli/src/daemon.rs:35-47`, and §8 "may rely on" 8 at `whirl
+docs/architecture.md:1838-1845`).
 
 Three consequences, stated rather than hidden:
 
-- **Running the step is permitted only under the amended §8.** As §8 stands today (item 3), the app
-  may not restart the daemon at all; the permission is ADR 0002's implied change 4, which narrows
-  the rule to its reason (`whirl docs/decisions/0002-frontends-write-config-own-no-daemon.md:550-553`).
-  Until that change lands, the app does not run the step and the prompt only hands the command over.
-- **Today the step does not exist.** whirl v0.1 ships no service verb: the CLI's own verb list has
-  no `service` (`whirl` `crates/whirl-cli/src/main.rs:29-48`), and `install.sh` says so itself and
-  guards for it (`install.sh:352-362`). Until whirl ships the step, the prompt's Restart button
-  hands the person the exact command instead of running it, and says which part is missing.
+- **Running the step is permitted, and whirl ships it.** §8 "must never" 3 forbids spawning a daemon
+  of the app's own, and its "may rely on" 8 names `whirl daemon …` as the steps a frontend makes
+  (`whirl docs/architecture.md:1865-1871`, `:1838-1845`; ADR 0002, implied change 4, at `whirl
+  docs/decisions/0002-frontends-write-config-own-no-daemon.md:550-553`). The pinned whirl carries
+  them: the five subcommands are whirl's `crates/whirl-cli/src/daemon.rs:35-47`, they ship from
+  v0.2.0, and `install.sh:163` pins `v0.2.1`. The app already drives three of them (`whirl daemon
+  status`, `whirl daemon start` and `whirl daemon stop`) through
+  `crates/whirl-ui/src/daemon_cli.rs:147-163` (the `Verb` enum) and its `launch` and `finish_quit`
+  (`:473-497`).
+- **What does not exist yet is the prompt, not the step.** Nothing in the app applies an update
+  today, so nothing calls the restart step; when the update flow is built, the prompt's Restart
+  button runs `whirl daemon stop` then `whirl daemon start` and reports what the command said, which
+  is what section 5 spells out.
 - **The app never runs the supervisor's own command.** `launchctl kickstart -k gui/<uid>/com.guruor.whirl`
-  is the supervisor action §5.2 names (`whirl docs/architecture.md:1569-1570`), and it is the
+  is the supervisor action §5.2 names (`whirl docs/architecture.md:1584-1585`), and it is the
   person's to run, not the app's.
 
 ### D2. Automatic mode is per piece: daemon unattended, bundle on approval (decision to confirm)
@@ -276,8 +283,8 @@ binaries into the prefix (`install.sh:335-346`). `whirl`, `whirld` and `whirl-wo
 present or the run refuses and installs nothing (`install.sh:339-342`).
 
 What the app must refuse: it must never write the daemon's login unit (the script asks whirl's own
-installer and writes no unit file, `install.sh:348-362`), and it must never spawn `whirld` or remove
-the socket (`whirl docs/architecture.md` §8 "must never" 3 and 5, lines 1798-1803).
+installer and writes no unit file, `install.sh:480-510`), and it must never spawn `whirld` or remove
+the socket (`whirl docs/architecture.md` §8 "must never" 3 and 5, lines 1865-1874).
 
 ### The app bundle: on approval
 
@@ -318,27 +325,27 @@ After the daemon's binaries are replaced, `~/.local/bin/whirl` is the new versio
 daemon is the old one, because a replaced file is not the running process. What the person is told
 is the restart prompt in section 2. The default is to restart (D1).
 
-What `Restart Now` does depends on the installed whirl, and the prompt says which case it is:
+What `Restart Now` does is the daemon's own start/stop step, named in full:
 
-- **When the installed whirl ships its own start/stop step, and §8 has been narrowed** (the step ADR
-  0002, decision 3 assumes and its implied change 15 would ship,
-  `docs/decisions/0002-frontends-write-config-own-no-daemon.md:604-606`, gated on the amendment at
-  lines 550-553), the app runs that step and nothing else. Named in full, the shape is
+```
+whirl daemon stop
+whirl daemon start
+```
 
-  ```
-  whirl service stop && whirl service start
-  ```
+Its exit codes are the CLI's own (whirl `crates/whirl-cli/src/daemon.rs:21`, and §8 "may rely on" 7
+at `whirl docs/architecture.md:1835-1837`): `0` the step was done, `1` whirl refused, `2` there is no
+supervised daemon to reach (or the supervisor could not be asked), `3` the command line was wrong.
+For the two steps the app runs, the codes that occur are `0` and `1`; `2` is `whirl daemon status`'s
+answer for a job the supervisor does not have (whirl
+`crates/whirl-cli/src/daemon/macos.rs:324-338`). The app reports what the step did, quoting the
+command's own line, and it never runs `launchctl`, `systemctl` or `schtasks` itself (ADR 0002, lines
+360-361, 507-511).
 
-  whose exit codes are the CLI's own (`whirl` `crates/whirl-cli/src/main.rs:3-6`): `0` the verb
-  completed, `1` the daemon refused, `2` the daemon is unreachable, `3` the command line was wrong.
-  The app reports what the step did. It never runs `launchctl`, `systemctl` or `schtasks` itself
-  (ADR 0002, lines 360-361, 464-469).
-- **Today, until that step exists** (whirl v0.1's verb list has no `service`,
-  `crates/whirl-cli/src/main.rs:29-48`; `install.sh:352-362` says the same), the app runs nothing.
-  `Restart Now` shows the person the command to run and the fact that the installed whirl cannot do
-  it yet. The alternative the app must never offer is
-  `launchctl kickstart -k gui/<uid>/com.guruor.whirl` (`whirl docs/architecture.md:1569-1570`): it is
-  the supervisor's action and the person's to run, not the app's.
+A `stop` that finds no job loaded is not an error: it prints `not running: <label>` and exits `0`,
+so the pair is safe against a daemon that is already down (whirl
+`crates/whirl-cli/src/daemon/macos.rs:283-296`). The alternative the app must never offer is
+`launchctl kickstart -k gui/<uid>/com.guruor.whirl` (`whirl docs/architecture.md:1584-1585`): it is
+the supervisor's action and the person's to run, not the app's.
 
 `Later` leaves the old daemon running, which is a working state: the daemon reads its config at
 startup and keeps rotating with the config it has (ADR 0002, measurement 1,
@@ -402,12 +409,12 @@ the daemon's contract lives in its own.
 | archive and `.sha256` are written by the bundler | `scripts/make-bundle.sh:162-169` |
 | the app is ad-hoc signed, not notarized | `scripts/make-bundle.sh:19-29`, `scripts/make-bundle.sh:138-158` |
 | the checksum is a delivery check, not an identity | `docs/releases/v0.1.0.md:69-80` |
-| the app does not own the daemon's lifetime | `docs/milestones.md:63-78`; `whirl docs/architecture.md` §8 "must never" 3 (lines 1798-1800) |
-| §8 "must never" 1-9 | `whirl docs/architecture.md:1790-1814` |
-| the OS supervisor owns the daemon's lifetime | `whirl docs/architecture.md` §5.1-§5.2 (lines 1534-1571) |
-| `launchctl kickstart -k` is the supervisor's action | `whirl docs/architecture.md:1569-1570` |
-| `daemon start\|stop\|restart` are not verbs | `whirl docs/architecture.md:178-182`; `whirl docs/spec/features.md:69` |
+| the app does not own the daemon's lifetime | `docs/milestones.md:63-78`; `whirl docs/architecture.md` §8 "must never" 3 (lines 1865-1871) |
+| §8 "must never" 1-9 | `whirl docs/architecture.md:1857-1885` |
+| the OS supervisor owns the daemon's lifetime | `whirl docs/architecture.md` §5.1-§5.2 (lines 1551-1585) |
+| `launchctl kickstart -k` is the supervisor's action | `whirl docs/architecture.md:1584-1585` |
+| `whirl daemon` has five subcommands, the app runs three | `whirl` `crates/whirl-cli/src/daemon.rs:35-47`; `whirl docs/architecture.md` §8 "may rely on" 8 (lines 1838-1845) |
 | a frontend may run whirl's own step, never a supervisor command | `whirl docs/decisions/0002-frontends-write-config-own-no-daemon.md:343-392`, `:448-469`, `:550-553`, `:604-606` |
-| whirl v0.1 ships no service verb | `whirl crates/whirl-cli/src/main.rs:29-48`; `install.sh:352-362` |
+| the `daemon` verb exists; no released CLI lists a `service` verb | `whirl` `crates/whirl-cli/src/daemon.rs:35-47`; `whirl docs/spec/features.md:69-74`; `install.sh:489-494` |
 | the daemon's config is read once at startup | `whirl docs/decisions/0002-frontends-write-config-own-no-daemon.md:55-100` |
 | the Karabiner-Elements restart pattern | <https://karabiner-elements.pqrs.org/docs/releasenotes/> ("the ability to restart Karabiner-Elements from the menu") |
