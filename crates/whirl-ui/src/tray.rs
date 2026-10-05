@@ -21,12 +21,12 @@
 //!   once the event loop is running (`tray-icon`'s own macOS requirement).
 //!
 //! The item's picture comes from [`crate::icon`], and it is the one thing here
-//! that changes without a menu rebuild: the two marks are template images, so
-//! macOS draws them from their alpha alone and inverts them for the menu bar's
-//! appearance, and the state decides which of the two is set. The mark is the
-//! item's whole label, which is why the item draws no title: what it is called
-//! is a tooltip and an accessible name (`ITEM_NAME`), and neither of those
-//! changes the item's width.
+//! that changes without a menu rebuild: the marks are template images, so macOS
+//! draws them from their alpha alone and inverts them for the menu bar's
+//! appearance, and the state decides which one is set. The mark is the item's
+//! whole label, which is why the item draws no title: what it is called is a
+//! tooltip and an accessible name (`ITEM_NAME`), and neither of those changes
+//! the item's width.
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -641,8 +641,8 @@ impl eframe::App for App {
         }
 
         // The picture, for the same reason and on the same pass as the rows: a
-        // `Paused` event changes both, and the mark is what makes the state
-        // readable with the menu shut.
+        // `Paused` event or a daemon going out of reach changes both, and the
+        // mark is what makes the state readable with the menu shut.
         let mark = icon::Mark::of(&self.shared.view());
         if mark != self.mark {
             if let Some(tray) = self.tray.as_ref()

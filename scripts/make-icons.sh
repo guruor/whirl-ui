@@ -10,9 +10,9 @@
 # Needs only what macOS ships: sips and iconutil.
 #
 # The menu bar marks are not built here. They are 16x16 and 32x32
-# rasterisations of the two SVGs beside them, and no macOS built-in rasterises an
-# SVG with an alpha channel (qlmanage draws one onto white, which is exactly what
-# a template image must not be), so those PNGs are committed as the sources.
+# rasterisations of the three SVGs beside them, and no macOS built-in rasterises
+# an SVG with an alpha channel (qlmanage draws one onto white, which is exactly
+# what a template image must not be), so those PNGs are committed as the sources.
 # With rsvg-convert on the PATH this script re-rasterises them, and the 1024
 # source, from the SVGs, which is how the committed ones were made; without it,
 # the files already in assets/ are used as they are.
@@ -37,8 +37,10 @@ if command -v rsvg-convert >/dev/null 2>&1; then
     rsvg-convert -w 32 -h 32 "$assets/mark.svg" -o "$assets/tray-iconTemplate@2x.png"
     rsvg-convert -w 16 -h 16 "$assets/mark-paused.svg" -o "$assets/tray-icon-pausedTemplate.png"
     rsvg-convert -w 32 -h 32 "$assets/mark-paused.svg" -o "$assets/tray-icon-pausedTemplate@2x.png"
+    rsvg-convert -w 16 -h 16 "$assets/mark-unreachable.svg" -o "$assets/tray-icon-unreachableTemplate.png"
+    rsvg-convert -w 32 -h 32 "$assets/mark-unreachable.svg" -o "$assets/tray-icon-unreachableTemplate@2x.png"
     rsvg-convert -w 1024 -h 1024 "$assets/app-icon.svg" -o "$source_png"
-    echo "make-icons: redrew the four marks and the 1024 source from the SVGs"
+    echo "make-icons: redrew the six tray rasters and the 1024 source from the SVGs"
 else
     echo "make-icons: rsvg-convert is not on PATH, so the SVGs are not re-rasterised;" >&2
     echo "            the committed PNGs in assets/ are used as they are" >&2
