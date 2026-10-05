@@ -89,10 +89,16 @@ cp crates/whirl-ui/assets/app-icon.icns "$app/Contents/Resources/AppIcon.icns"
 
 # The bundle's own description. Each key here is load-bearing:
 #
-#   LSUIElement            true: an agent app. It appears nowhere in the Dock and
-#                          opens no window of its own, only its status item (M1
-#                          criterion 5, now stated by the bundle as well as by the
-#                          activation policy the app asks for).
+#   LSUIElement            true: the app launches as an agent. No Dock tile and
+#                          nothing in the switcher while its window is shut; its
+#                          status item is all there is (M1 criterion 5, stated by
+#                          the bundle as well as by the activation policy the app
+#                          is built with). It is not the app's policy for its
+#                          whole life: while the settings window is on screen the
+#                          app moves itself to the regular policy, so the window
+#                          is managed by the window manager and the app can be
+#                          switched to, and it moves back when the window closes
+#                          (`crates/whirl-ui/src/window.rs`).
 #   CFBundleName           Whirl: the name macOS displays wherever the app is
 #                          named, the Login Items pane included. This is the key
 #                          that fixes the unrecognisable row the operator saw.

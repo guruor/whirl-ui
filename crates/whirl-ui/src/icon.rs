@@ -16,8 +16,8 @@
 //! appearance cannot catch.
 //!
 //! The PNGs are decoded at runtime rather than converted to raw bytes at build
-//! time. `png` is already a dependency (the `--screenshot` writer), the four
-//! files together are under 2 kB, and a file that stops decoding is then a
+//! time. `png` is already a dependency (the `--screenshot` writer), the six
+//! files together are about 3 kB, and a file that stops decoding is then a
 //! message on stderr rather than a compile error in a module nobody edits.
 //!
 //! Nothing here touches `tray-icon`: the crate is a macOS-only dependency, and
@@ -39,33 +39,51 @@ const RUNNING_2X: &[u8] = include_bytes!("../assets/tray-iconTemplate@2x.png");
 /// The paused mark: the whirl's outer turn wound around a pause, at two pixels
 /// per point.
 const PAUSED_2X: &[u8] = include_bytes!("../assets/tray-icon-pausedTemplate@2x.png");
+/// The unreachable mark: the whirl's outer turn with a break in it, at two
+/// pixels per point.
+const UNREACHABLE_2X: &[u8] = include_bytes!("../assets/tray-icon-unreachableTemplate@2x.png");
 
 // The 1x files ship beside the 2x ones and the tests below are what checks them;
 // the tray sets the 2x file only (`Mark::png`), so the binary does not carry
-// these two. A 1x file that stopped decoding still fails the suite, which runs
+// these three. A 1x file that stopped decoding still fails the suite, which runs
 // on all three platforms.
 #[cfg(test)]
 const RUNNING_1X: &[u8] = include_bytes!("../assets/tray-iconTemplate.png");
 #[cfg(test)]
 const PAUSED_1X: &[u8] = include_bytes!("../assets/tray-icon-pausedTemplate.png");
+#[cfg(test)]
+const UNREACHABLE_1X: &[u8] = include_bytes!("../assets/tray-icon-unreachableTemplate.png");
 
-/// Which of the two marks the menu bar item is showing.
+/// Which of the marks the menu bar item is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
-    /// The schedule is live: the whirl.
+    /// The daemon answered and the schedule is live: the whirl.
     Running,
-    /// The daemon reports `paused=true`: the whirl paused.
+    /// The daemon answered and reports `paused=true`: the whirl paused.
     Paused,
+    /// The daemon did not answer: the whirl's outer turn, broken.
+    Unreachable,
 }
 
 impl Mark {
     /// The mark the daemon's state calls for.
     ///
-    /// A daemon this app cannot reach is not paused. `paused` is a value the
-    /// daemon's `status` carries (2.10), not something to infer from silence, so
-    /// a state the app does not have leaves the running mark.
+    /// Three states, and one source of truth for each. The app reaches the
+    /// daemon or it does not, and that is the same connection outcome the
+    /// window draws in its own words (`Daemon::NotRunning`, "whirl is not
+    /// running"); this is not a second opinion about it, it is the same fact
+    /// rendered as a mark rather than a sentence. A reached daemon reports
+    /// `paused` in its `status` (2.10) or it does not.
+    ///
+    /// An unreachable daemon is not a paused one: `paused` is a value the
+    /// daemon's `status` carries, never something to infer from silence, so
+    /// silence is its own mark rather than a pause the app guessed. It is not a
+    /// running one either: with no `status` there is nothing to say the
+    /// schedule is live.
     pub fn of(view: &View) -> Mark {
-        if view.paused() {
+        if !view.reachable() {
+            Mark::Unreachable
+        } else if view.paused() {
             Mark::Paused
         } else {
             Mark::Running
@@ -84,6 +102,7 @@ impl Mark {
         match self {
             Mark::Running => RUNNING_2X,
             Mark::Paused => PAUSED_2X,
+            Mark::Unreachable => UNREACHABLE_2X,
         }
     }
 
@@ -170,11 +189,13 @@ mod tests {
 
     /// Every file this module ships: what it is, its bytes, and its side in
     /// pixels.
-    const SHIPPED: [(&str, &[u8], u32); 4] = [
+    const SHIPPED: [(&str, &[u8], u32); 6] = [
         ("running 1x", RUNNING_1X, 16),
         ("running 2x", RUNNING_2X, 32),
         ("paused 1x", PAUSED_1X, 16),
         ("paused 2x", PAUSED_2X, 32),
+        ("unreachable 1x", UNREACHABLE_1X, 16),
+        ("unreachable 2x", UNREACHABLE_2X, 32),
     ];
 
     /// A `status` body, as the daemon prints the keys this module reads.
@@ -245,7 +266,11 @@ mod tests {
     fn the_two_scales_of_a_mark_are_the_same_picture() {
         // Blowing the 1x file up by two should land on the 2x file's ink: the
         // two are one drawing, not two that drifted apart.
-        for (one, two) in [(RUNNING_1X, RUNNING_2X), (PAUSED_1X, PAUSED_2X)] {
+        for (one, two) in [
+            (RUNNING_1X, RUNNING_2X),
+            (PAUSED_1X, PAUSED_2X),
+            (UNREACHABLE_1X, UNREACHABLE_2X),
+        ] {
             let small = Artwork::decode(one).expect("1x");
             let large = Artwork::decode(two).expect("2x");
             let inked = |art: &Artwork| {
@@ -264,9 +289,17 @@ mod tests {
     }
 
     #[test]
-    fn the_two_marks_are_two_pictures() {
-        for (running, paused) in [(RUNNING_1X, PAUSED_1X), (RUNNING_2X, PAUSED_2X)] {
-            assert_ne!(running, paused);
+    fn the_three_marks_are_three_pictures() {
+        // A state indicator that two states share is not an indicator: every
+        // pair of marks has to be a different drawing, at both scales.
+        let at1x = [RUNNING_1X, PAUSED_1X, UNREACHABLE_1X];
+        let at2x = [RUNNING_2X, PAUSED_2X, UNREACHABLE_2X];
+        for files in [at1x, at2x] {
+            for (i, left) in files.iter().enumerate() {
+                for right in &files[i + 1..] {
+                    assert_ne!(left, right, "two marks are the same file");
+                }
+            }
         }
     }
 
@@ -291,22 +324,30 @@ mod tests {
     }
 
     #[test]
-    fn the_two_marks_ink_the_same_box() {
+    fn the_three_marks_ink_the_same_box() {
         // A state change may not resize the item. The item is as wide as its
-        // artwork (the tray sets a mark and no title), so the two marks have to
-        // land on the same pixels of the same canvas: a paused mark drawn in a
-        // wider or a narrower part of its own box would move the item's edges
-        // whenever the state changed. This is what the paused mark being "one
-        // drawing in the same 16x16 box" means, checked rather than assumed.
-        for (running, paused) in [(RUNNING_1X, PAUSED_1X), (RUNNING_2X, PAUSED_2X)] {
-            let running = Artwork::decode(running).expect("running");
-            let paused = Artwork::decode(paused).expect("paused");
+        // artwork (the tray sets a mark and no title), so the marks have to
+        // land on the same pixels of the same canvas: a mark drawn in a wider
+        // or a narrower part of its own box would move the item's edges
+        // whenever the state changed. This is what "one drawing in the same
+        // 16x16 box" means for all three, checked rather than assumed.
+        for files in [
+            [RUNNING_1X, PAUSED_1X, UNREACHABLE_1X],
+            [RUNNING_2X, PAUSED_2X, UNREACHABLE_2X],
+        ] {
+            let boxes: Vec<(u32, u32, u32, u32)> = files
+                .iter()
+                .map(|bytes| ink_box(&Artwork::decode(bytes).expect("a mark")))
+                .collect();
             assert_eq!(
-                ink_box(&running),
-                ink_box(&paused),
-                "the marks ink different boxes: left {:?}, right {:?}",
-                ink_box(&running),
-                ink_box(&paused)
+                boxes[0], boxes[1],
+                "the running and paused marks ink different boxes: {:?} and {:?}",
+                boxes[0], boxes[1]
+            );
+            assert_eq!(
+                boxes[0], boxes[2],
+                "the unreachable mark inks a different box: {:?} and {:?}",
+                boxes[0], boxes[2]
             );
         }
     }
@@ -352,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_follows_paused_and_only_paused() {
+    fn the_mark_follows_the_connection_and_then_the_pause() {
         assert_eq!(Mark::of(&View::live(status(false))), Mark::Running);
         assert_eq!(Mark::of(&View::live(status(true))), Mark::Paused);
 
@@ -361,9 +402,29 @@ mod tests {
         assert_eq!(Mark::of(&view), Mark::Paused);
         view.apply(&Event::Resumed);
         assert_eq!(Mark::of(&view), Mark::Running);
+    }
 
-        // No daemon is not a paused daemon: there is no `paused` value to read,
-        // so the item keeps the mark a state it does not have would leave.
-        assert_eq!(Mark::of(&View::offline()), Mark::Running);
+    #[test]
+    fn an_unreachable_daemon_is_its_own_mark_and_never_a_pause() {
+        // The required change: the third mark, chosen from the connection
+        // outcome the app already holds. A daemon this app cannot reach is not
+        // running (the bug this fixes) and not paused either: there is no
+        // `paused` value to read, so silence may not be read as one. The
+        // assertion that it is not `Paused` is the point: if `Mark::of` folded
+        // unreachable into a pause, the two states the daemon can actually
+        // report would be indistinguishable from the one it cannot.
+        let offline = View::offline();
+        assert_eq!(Mark::of(&offline), Mark::Unreachable);
+        assert!(!offline.paused(), "an unreachable daemon is not paused");
+        assert_ne!(
+            Mark::of(&offline),
+            Mark::Paused,
+            "an unreachable daemon must not be drawn as paused"
+        );
+        assert_ne!(
+            Mark::of(&offline),
+            Mark::Running,
+            "an unreachable daemon must not be drawn as running"
+        );
     }
 }

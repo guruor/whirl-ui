@@ -4,7 +4,9 @@
 //!
 //! - **where the wallpapers come from** ([`Sources`]): one row per source, a
 //!   folder of the person's own pictures or Wallhaven's remote collection,
-//!   described in those words rather than in the schema's;
+//!   described in those words rather than in the schema's. A Wallhaven source
+//!   is added by the address of the collection to fetch, which is asked for
+//!   first and stays editable afterwards ([`CollectionField`], [`Row::line`]);
 //! - **how often they change** ([`Interval`]): a number and a unit, never the
 //!   raw interval the file stores and never a key name;
 //! - **whether whirl answered** ([`Daemon`]), one line, so nothing on screen
@@ -108,6 +110,19 @@ pub const ROTATION_LINE: &str = "how long each wallpaper stays before whirl chan
 pub const KEY_LINE: &str =
     "the key is saved in your system's password store and is never written to the config file";
 
+/// The collection field's heading, in a person's words rather than the schema's.
+pub const COLLECTION_TITLE: &str = "Wallhaven collection address";
+
+/// The collection field's own line: the three addresses a person can paste.
+///
+/// The forms are the ones a person actually holds, and they are the same three
+/// [`crate::config_file::COLLECTION_FORMS`] names in the refusal, so the field
+/// and the reason it gives agree word for word.
+pub const COLLECTION_LINE: &str = "paste the collection's address: https://wallhaven.cc/user/<username>/favorites/<id>, https://wallhaven.cc/api/v1/collections/<username>/<id>, or just <username>/<id>";
+
+/// The collection field's second line: when a key is needed, and when it is not.
+pub const COLLECTION_TOKEN_NOTE: &str = "a public collection needs no key; a private one, or one of your own account's, needs a key, which you can add once this is saved";
+
 /// The line under the daemon's: where a change is actually written.
 ///
 /// The window edits the config file and never the running daemon, and a person
@@ -193,6 +208,8 @@ pub struct Settings {
     pub picker: Option<Picker>,
     /// The Wallhaven key field, while it is open.
     pub key: KeyField,
+    /// The Wallhaven collection field, while it is open.
+    pub collection: CollectionField,
 }
 
 /// Whether whirl answered, as the one line the window carries about it.
@@ -248,6 +265,10 @@ pub enum Kind {
     },
     /// Wallhaven's remote collection.
     Wallhaven {
+        /// The collection's address as the file spells it: the daemon's own
+        /// `<username>/<id>` pair, or `None` when the file names none. It is
+        /// what the row shows, so what the window would write is visible first.
+        collection: Option<String>,
         /// What is known about its key.
         key: KeyState,
     },
@@ -295,8 +316,12 @@ impl Row {
                     format!("A folder on this Mac: {folder} (and {more} more)")
                 }
             }
-            Kind::Wallhaven { key } => {
-                format!("Wallhaven, a remote collection: {}", key.phrase())
+            Kind::Wallhaven { collection, key } => {
+                let address = collection.as_deref().unwrap_or("no URL yet");
+                format!(
+                    "Wallhaven, a remote collection: {address} ({})",
+                    key.phrase()
+                )
             }
         }
     }
@@ -318,6 +343,19 @@ impl Row {
     pub fn changeable_folder(&self) -> Option<&str> {
         match &self.kind {
             Kind::Folder { folders } if folders.len() == 1 => folders.first().map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// The collection address a Wallhaven row already reads, when the file names
+    /// one. This is what the row's `Change URL…` control opens the field on: the
+    /// address is edited rather than replaced from memory.
+    pub fn collection_url(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Wallhaven {
+                collection: Some(collection),
+                ..
+            } => Some(collection),
             _ => None,
         }
     }
@@ -465,6 +503,25 @@ pub struct KeyField {
     pub token: String,
 }
 
+/// The Wallhaven collection field, while it is open.
+///
+/// It asks for the one thing a Wallhaven source cannot be added without: the
+/// address of the collection to fetch. The address is not a secret and is shown
+/// as typed; the key is the field beside it, and stays in [`KeyField`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CollectionField {
+    /// Whether the field is on screen.
+    pub open: bool,
+    /// The address as typed.
+    pub url: String,
+    /// The source this address is going to, or `None` when the field is adding a
+    /// new one.
+    pub for_source: Option<String>,
+    /// Why the address was refused, in the one sentence that names the accepted
+    /// forms, shown beside the field. `None` until a save was refused.
+    pub problem: Option<String>,
+}
+
 /// The folder chooser, while one is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
@@ -477,6 +534,110 @@ pub struct Picker {
     pub entries: Vec<PathBuf>,
     /// Why the folder could not be listed, when it could not.
     pub problem: Option<String>,
+}
+
+/// What the platform's folder panel answered.
+///
+/// The window's two folder controls go through [`Settings::choose_folder`], and
+/// this is the panel's whole vocabulary: a folder, a dismissal, or no panel to
+/// show. The drawn browser ([`Picker`]) is the fallback for the last of the
+/// three, so a machine without AppKit, a run with no window to put a modal panel
+/// in, or a panel that would not present all reach the same control the app
+/// always had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        reason = "the two answers a panel can give are only built by the macOS `NSOpenPanel` call (`ask_the_panel`); off macOS there is no panel, so nothing outside this module's test constructs them, and use inside `#[cfg(test)]` does not count in a non-test build"
+    )
+)]
+pub enum PanelAnswer {
+    /// The person chose this folder.
+    Chosen(PathBuf),
+    /// The person dismissed the panel. Nothing is written.
+    Cancelled,
+    /// There was no panel to show: the platform has none, or none could be
+    /// presented. The drawn browser is the fallback.
+    Unavailable,
+}
+
+/// The platform's folder panel, asked for one folder.
+///
+/// One question, one answer. The AppKit panel ([`SystemPanel`]) is the only
+/// implementation that ships; it is behind a trait so a test can answer without
+/// opening anything and still drive the write a click drives
+/// ([`Settings::choose_folder`]).
+pub trait FolderPanel {
+    /// Ask the person for a folder.
+    fn ask(&self) -> PanelAnswer;
+}
+
+/// The panel this app ships: `NSOpenPanel` on macOS, and no panel elsewhere.
+///
+/// On a platform without AppKit the answer is [`PanelAnswer::Unavailable`], so a
+/// click reaches the drawn browser exactly as it always did. The Linux and
+/// Windows CI legs compile that arm rather than the AppKit one.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemPanel;
+
+impl FolderPanel for SystemPanel {
+    fn ask(&self) -> PanelAnswer {
+        ask_the_panel()
+    }
+}
+
+/// Ask the platform for a folder.
+///
+/// The one AppKit call in this app: an `NSOpenPanel` that offers directories and
+/// no files, lets one be created, takes one choice, and is worded for a folder of
+/// pictures. It runs modally on the main thread, which is the thread the click is
+/// on, and it answers with the folder the person picked, a dismissal, or
+/// [`PanelAnswer::Unavailable`] when there is no main-thread marker to present a
+/// panel with (or the run came back neither OK nor Cancel), which is where the
+/// drawn browser takes over.
+#[cfg(target_os = "macos")]
+fn ask_the_panel() -> PanelAnswer {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::NSString;
+
+    // A marker off the main thread means this is not a run that can present a
+    // modal panel, and the drawn browser is the way in.
+    let Some(mtm) = MainThreadMarker::new() else {
+        return PanelAnswer::Unavailable;
+    };
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseDirectories(true);
+    panel.setCanChooseFiles(false);
+    panel.setCanCreateDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    panel.setPrompt(Some(&NSString::from_str("Choose")));
+    panel.setMessage(Some(&NSString::from_str("Choose a folder of pictures")));
+    // `runModal` answers `NSModalResponseOK` on a choice, `NSModalResponseCancel`
+    // on a dismissal, and `NSModalResponseAbort` when the panel could not be
+    // displayed. The three are compared rather than matched: the two constants
+    // are statics, and a static cannot stand as a match pattern.
+    let answer = panel.runModal();
+    if answer == NSModalResponseOK {
+        match panel.URL().and_then(|url| url.path()) {
+            Some(folder) => PanelAnswer::Chosen(PathBuf::from(folder.to_string())),
+            // OK with no folder behind it is not a choice this app can write.
+            None => PanelAnswer::Cancelled,
+        }
+    } else if answer == NSModalResponseCancel {
+        PanelAnswer::Cancelled
+    } else {
+        // `NSModalResponseAbort`: the panel failed to display, which is the
+        // fallback's case rather than a dismissal.
+        PanelAnswer::Unavailable
+    }
+}
+
+/// No AppKit here: the drawn browser is the way in.
+#[cfg(not(target_os = "macos"))]
+fn ask_the_panel() -> PanelAnswer {
+    PanelAnswer::Unavailable
 }
 
 /// What the last edit did, in the words of the control that made it.
@@ -610,6 +771,7 @@ impl Settings {
             interval,
             picker: None,
             key: KeyField::default(),
+            collection: CollectionField::default(),
         }
     }
 
@@ -713,28 +875,93 @@ impl Settings {
         self.record_sources("Add a folder", SAVED_FILE, result);
     }
 
-    /// Add a Wallhaven source, and open the field for its key.
+    /// Open the field that asks for a new Wallhaven source's collection address.
     ///
-    /// The source lands first and the key second, so a store that refuses leaves
-    /// the source on screen reading as one that needs a key rather than losing
-    /// the person's place.
-    pub fn add_wallhaven(&mut self) {
-        let id = self.free_id(WALLHAVEN);
-        self.add_wallhaven_as(&id);
+    /// Nothing is written yet: a Wallhaven source with no collection is a source
+    /// that names nothing to fetch, which is the defect this field exists to
+    /// answer. The source lands when the address does.
+    pub fn ask_for_collection(&mut self) {
+        self.collection = CollectionField {
+            open: true,
+            url: String::new(),
+            for_source: None,
+            problem: None,
+        };
     }
 
-    /// Add a Wallhaven source under an id the caller names, and open the key
-    /// field when it landed.
-    pub fn add_wallhaven_as(&mut self, id: &str) {
-        let document = config_file::wallhaven_source(id, keychain::LABEL);
-        let result = self
-            .writing_target()
-            .and_then(|path| config_file::add_source(path, document));
+    /// Open the field on the address an existing Wallhaven row already reads.
+    ///
+    /// The address is prefilled from the file, so the person changes it rather
+    /// than retyping it from memory.
+    pub fn edit_collection(&mut self, id: &str) {
+        let url = self
+            .sources
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.collection_url())
+            .unwrap_or_default()
+            .to_string();
+        self.collection = CollectionField {
+            open: true,
+            url,
+            for_source: Some(id.to_string()),
+            problem: None,
+        };
+    }
+
+    /// Land the address the field holds, and say what happened.
+    ///
+    /// The address is reduced to the daemon's own `<username>/<id>` pair before
+    /// anything is written, so a form the daemon would refuse never reaches the
+    /// file: the refusal is one sentence beside the field and the file is
+    /// untouched. A new source lands with its collection, and the key field is
+    /// offered next because the key is optional and the collection is not.
+    pub fn save_collection(&mut self) {
+        let adding = self.collection.for_source.is_none();
+        let control = if adding {
+            "Add Wallhaven"
+        } else {
+            "Change URL"
+        };
+        let pair = match config_file::collection_of(&self.collection.url) {
+            Ok(pair) => pair,
+            Err(reason) => {
+                self.collection.problem = Some(reason.clone());
+                self.sources.outcome = Some(Outcome::Refused {
+                    control: control.to_string(),
+                    reason,
+                });
+                return;
+            }
+        };
+        let result = match self.collection.for_source.clone() {
+            None => {
+                let id = self.free_id(WALLHAVEN);
+                let document = config_file::wallhaven_source(&id, keychain::LABEL, &pair);
+                self.writing_target()
+                    .and_then(|path| config_file::add_source(path, document))
+            }
+            Some(id) => self
+                .writing_target()
+                .and_then(|path| config_file::set_source_collection(path, &id, &pair)),
+        };
         let saved = result.is_ok();
-        self.record_sources("Wallhaven", SAVED_FILE, result);
+        self.record_sources(control, SAVED_FILE, result);
         if saved {
-            self.key.open = true;
+            self.collection.problem = None;
+            self.collection.open = false;
+            if adding {
+                // The key is the optional half: the source is on screen and in
+                // the file, and the field that adds the key opens beside it.
+                self.key.open = true;
+            }
         }
+    }
+
+    /// Close the collection field and change nothing.
+    pub fn cancel_collection(&mut self) {
+        self.collection = CollectionField::default();
     }
 
     /// Move a source one place in the file's order, and nothing at the edge.
@@ -791,7 +1018,35 @@ impl Settings {
         }
     }
 
-    /// Open the folder chooser, for one source or for a new one.
+    /// Ask for a folder through `panel`, and write what the answer says.
+    ///
+    /// The whole of the `Add a folder…` and `Change…` controls: the platform's
+    /// panel is asked first, and its answer is a folder to write through the same
+    /// path the commands use (`add_folder` for a new source, `set_source_folder`
+    /// for an existing one), a dismissal that writes nothing, or no panel at all,
+    /// which is where the drawn browser ([`Settings::open_picker`]) takes over.
+    /// The AppKit panel is the only implementation that ships; a test hands its
+    /// own answer in and drives the same write without opening anything.
+    pub fn choose_folder(&mut self, for_source: Option<String>, panel: &dyn FolderPanel) {
+        match panel.ask() {
+            PanelAnswer::Chosen(folder) => {
+                let folder = folder.display().to_string();
+                match for_source {
+                    Some(id) => self.set_source_folder(&id, &folder),
+                    None => self.add_folder(&folder),
+                }
+            }
+            PanelAnswer::Cancelled => {}
+            PanelAnswer::Unavailable => self.open_picker(for_source),
+        }
+    }
+
+    /// Open the drawn browser, for one source or for a new one.
+    ///
+    /// The fallback for [`Settings::choose_folder`]: the way in when there is no
+    /// panel to ask (a machine without AppKit) or none could be presented. Its
+    /// clicks are the picker methods below, and it stays the documented behaviour
+    /// for those cases.
     pub fn open_picker(&mut self, for_source: Option<String>) {
         let start = for_source
             .as_ref()
@@ -978,6 +1233,7 @@ impl Settings {
                         buttons.push("Change…");
                     }
                     if matches!(row.kind, Kind::Wallhaven { .. }) {
+                        buttons.push("Change URL…");
                         buttons.push("Enter key…");
                     }
                     buttons.push("Remove");
@@ -1000,6 +1256,17 @@ impl Settings {
         if self.key.open {
             out.push_str("  Wallhaven key [••••] [Save key] [Cancel]\n");
             out.push_str(&format!("  {KEY_LINE}\n"));
+        }
+        if self.collection.open {
+            out.push_str(&format!(
+                "  {COLLECTION_TITLE} [{}] [Save] [Cancel]\n",
+                self.collection.url
+            ));
+            out.push_str(&format!("  {COLLECTION_LINE}\n"));
+            out.push_str(&format!("  {COLLECTION_TOKEN_NOTE}\n"));
+            if let Some(problem) = &self.collection.problem {
+                out.push_str(&format!("  {problem}\n"));
+            }
         }
 
         out.push('\n');
@@ -1058,6 +1325,7 @@ fn rows_of(sources: &[FileSource]) -> Vec<Row> {
                 .get_or_insert_with(|| keychain::exists().map_err(|error| error.to_string()))
                 .clone();
             Kind::Wallhaven {
+                collection: source.collection.clone(),
                 key: key_state(source.key_ref.as_deref(), exists),
             }
         } else {
@@ -1413,20 +1681,136 @@ mod tests {
     }
 
     #[test]
-    fn adding_wallhaven_opens_the_key_field_and_the_source_needs_a_key() {
+    fn asking_for_a_wallhaven_collection_lands_the_address_and_then_offers_the_key() {
         let (mut settings, path) = window_from("add-wallhaven", CONFIG);
-        settings.add_wallhaven();
+        // The button opens the field and writes nothing yet: a source with no
+        // collection is what this field exists to prevent.
+        settings.ask_for_collection();
+        assert!(settings.collection.open, "the field opens on the button");
+        assert!(settings.collection.for_source.is_none());
         assert!(
-            settings.key.open,
-            "the key field opens beside the new source"
+            !settings.key.open,
+            "nothing is written until the address is"
         );
+
+        settings.collection.url = "https://wallhaven.cc/user/alice/favorites/12345".to_string();
+        settings.save_collection();
+
+        assert!(
+            !settings.collection.open,
+            "the field closes once the address lands"
+        );
+        assert!(settings.key.open, "the optional key is offered next");
         let row = settings.sources.rows.last().expect("the new source");
-        assert_eq!(row.id, "wallhaven");
+        assert_eq!(row.id, "wallhaven", "the id is derived from the kind");
+        assert_eq!(row.collection_url(), Some("alice/12345"));
+        // The pair is the row's description, so what was written is visible.
+        // Whether a key is saved is a fact about this machine, so the key half
+        // is asserted only up to where the two answers differ.
+        assert!(
+            row.line()
+                .starts_with("Wallhaven, a remote collection: alice/12345 ("),
+            "{}",
+            row.line()
+        );
         let landed = std::fs::read_to_string(&path).expect("the file");
-        // The label, which is a name, and never a key.
+        assert!(
+            landed.contains(r#""collection": "alice/12345""#),
+            "{landed}"
+        );
         assert!(
             landed.contains(&format!("\"api_key_ref\": \"{}\"", keychain::LABEL)),
             "{landed}"
+        );
+        // The address that reached the file is the daemon's own value, not the
+        // URL the person pasted.
+        assert!(!landed.contains("wallhaven.cc"), "{landed}");
+    }
+
+    #[test]
+    fn an_address_that_is_not_a_collection_is_refused_beside_the_field() {
+        let (mut settings, path) = window_from("bad-collection", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+        settings.ask_for_collection();
+        settings.collection.url = "https://wallhaven.cc/search?q=nebula".to_string();
+        settings.save_collection();
+
+        assert!(settings.collection.open, "the field stays open to be fixed");
+        let problem = settings
+            .collection
+            .problem
+            .clone()
+            .expect("a reason beside the field");
+        // The one sentence names every accepted form.
+        for form in [
+            "https://wallhaven.cc/user/<username>/favorites/<id>",
+            "https://wallhaven.cc/api/v1/collections/<username>/<id>",
+            "<username>/<id>",
+        ] {
+            assert!(problem.contains(form), "{problem}");
+        }
+        let line = settings
+            .sources
+            .outcome
+            .as_ref()
+            .expect("an outcome")
+            .line();
+        assert!(
+            line.starts_with("Add Wallhaven: nothing was saved"),
+            "{line}"
+        );
+        // Nothing was written: no source was added and the file is as it was.
+        assert_eq!(
+            settings.sources.rows.len(),
+            2,
+            "{:?}",
+            settings.sources.rows
+        );
+        assert_eq!(std::fs::read(&path).expect("the file"), before);
+        let text = settings.to_text();
+        assert!(text.contains(COLLECTION_TOKEN_NOTE), "{text}");
+    }
+
+    #[test]
+    fn an_existing_collection_address_can_be_changed_and_the_key_survives() {
+        let (mut settings, path) = window_from("change-url", CONFIG);
+        // `space` names a key and no collection yet: the field opens empty.
+        settings.edit_collection("space");
+        assert!(settings.collection.open);
+        assert_eq!(settings.collection.for_source.as_deref(), Some("space"));
+        assert_eq!(settings.collection.url, "");
+
+        settings.collection.url = "alice/999".to_string();
+        settings.save_collection();
+
+        assert_eq!(settings.sources.rows[1].collection_url(), Some("alice/999"));
+        assert!(
+            settings.sources.rows[1]
+                .line()
+                .starts_with("Wallhaven, a remote collection: alice/999 ("),
+            "{}",
+            settings.sources.rows[1].line()
+        );
+        let landed = std::fs::read_to_string(&path).expect("the file");
+        assert!(landed.contains(r#""collection": "alice/999""#), "{landed}");
+        // Every key the edit did not own is exactly as it was.
+        assert!(
+            landed.contains(&format!("\"api_key_ref\": \"{}\"", keychain::LABEL)),
+            "{landed}"
+        );
+        assert!(landed.contains("\"_comment_1\""), "{landed}");
+        assert!(landed.contains("\"/tmp/walls\""), "{landed}");
+
+        // Editing again opens on the address the file now holds, so it is
+        // changed rather than retyped from memory.
+        settings.edit_collection("space");
+        assert_eq!(settings.collection.url, "alice/999");
+        settings.cancel_collection();
+        assert!(!settings.collection.open);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file"),
+            landed,
+            "a cancel writes nothing"
         );
     }
 
@@ -1531,6 +1915,94 @@ mod tests {
             .as_ref()
             .map(|picker| picker.directory.canonicalize().expect("the folder"));
         assert_eq!(shown, Some(folder.canonicalize().expect("the folder")));
+    }
+
+    /// A panel that answers what a test tells it, without opening anything.
+    ///
+    /// The seam's whole point: the window asks a [`FolderPanel`], and a test can
+    /// be one.
+    struct Answering(PanelAnswer);
+
+    impl FolderPanel for Answering {
+        fn ask(&self) -> PanelAnswer {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn a_chosen_folder_lands_the_write_the_button_makes() {
+        // The panel is the way in now, and what it writes has to be the write the
+        // control already made: the same folder chosen through the panel and
+        // passed to `add_folder` must leave the same row and the same file.
+        let folder = "/tmp/My Pictures";
+        let (mut via_panel, panel_path) = window_from("choose-panel", CONFIG);
+        let (mut via_button, button_path) = window_from("choose-button", CONFIG);
+
+        via_panel.choose_folder(None, &Answering(PanelAnswer::Chosen(PathBuf::from(folder))));
+        via_button.add_folder(folder);
+
+        assert_eq!(
+            via_panel.sources.rows, via_button.sources.rows,
+            "the row the panel's choice produces"
+        );
+        assert!(
+            via_panel
+                .sources
+                .rows
+                .iter()
+                .any(|row| row.line().contains(folder)),
+            "{:?}",
+            via_panel.sources.rows
+        );
+        assert_eq!(
+            std::fs::read_to_string(&panel_path).expect("the file"),
+            std::fs::read_to_string(&button_path).expect("the file"),
+            "the file the panel's choice writes"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_panel_writes_nothing() {
+        let (mut settings, path) = window_from("choose-cancelled", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+        let rows = settings.sources.rows.clone();
+
+        settings.choose_folder(None, &Answering(PanelAnswer::Cancelled));
+
+        assert_eq!(
+            std::fs::read(&path).expect("the file"),
+            before,
+            "a cancellation wrote the file"
+        );
+        assert_eq!(settings.sources.rows, rows, "a cancellation changed a row");
+        assert!(
+            settings.sources.outcome.is_none(),
+            "a cancellation claimed an outcome: {:?}",
+            settings.sources.outcome
+        );
+    }
+
+    #[test]
+    fn a_panel_that_cannot_be_shown_falls_back_to_the_drawn_browser() {
+        // No AppKit, no GUI, or a panel that would not present: the click reaches
+        // the drawn browser the app always had, and it stays the documented
+        // behaviour for those runs (see `Settings::choose_folder`).
+        let (mut settings, path) = window_from("choose-fallback", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+
+        settings.choose_folder(None, &Answering(PanelAnswer::Unavailable));
+
+        assert!(settings.picker.is_some(), "the drawn browser did not open");
+        assert!(
+            settings.to_text().contains(PICKER_TITLE),
+            "{}",
+            settings.to_text()
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("the file"),
+            before,
+            "opening the fallback wrote the file"
+        );
     }
 
     #[test]

@@ -110,10 +110,17 @@ fn leftovers(directory: &Path) -> Vec<String> {
 }
 
 #[test]
-fn a_wallhaven_source_lands_with_the_label_and_the_parser_reads_it_back() {
+fn a_wallhaven_source_lands_the_collection_and_the_label_and_never_a_key() {
     let (directory, config) = scratch("wallhaven");
     let socket = directory.join("whirl.sock");
-    let output = source(&config, &socket, &["add-wallhaven", "space"]);
+    let output = source(
+        &config,
+        &socket,
+        &[
+            "add-wallhaven",
+            "https://wallhaven.cc/user/alice/favorites/12345",
+        ],
+    );
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
     let stdout = stdout_of(&output);
@@ -121,21 +128,28 @@ fn a_wallhaven_source_lands_with_the_label_and_the_parser_reads_it_back() {
         stdout.contains(&format!("config: {}", config.display())),
         "{stdout}"
     );
-    // The row the window draws for the source it just added. Whether the store
-    // holds a key is a fact about this machine, so the row is asserted up to the
-    // point where the two answers differ.
+    // The row the window draws: the parsed pair, so what landed is visible, and
+    // what the store says about the key. Whether the store holds one is a fact
+    // about this machine, so the row is asserted up to where the two differ.
     assert!(
-        one_row(&stdout).starts_with("[x] Wallhaven, a remote collection: "),
+        one_row(&stdout).starts_with("[x] Wallhaven, a remote collection: alice/12345 ("),
         "{stdout}"
     );
     assert!(stdout.contains("Wallhaven: saved"), "{stdout}");
 
     let landed = std::fs::read_to_string(&config).expect("the file");
+    // The daemon's own field, holding the daemon's own pair rather than the URL
+    // the person pasted.
+    assert!(
+        landed.contains("\"collection\": \"alice/12345\""),
+        "{landed}"
+    );
+    assert!(!landed.contains("wallhaven.cc"), "{landed}");
     assert!(
         landed.contains(&format!("\"api_key_ref\": \"{LABEL}\"")),
         "{landed}"
     );
-    assert!(landed.contains("\"id\": \"space\""), "{landed}");
+    assert!(landed.contains("\"id\": \"wallhaven\""), "{landed}");
     // Everything that was not the sources array is still there.
     for keep in [
         "\"_comment_1\"",
@@ -152,21 +166,128 @@ fn a_wallhaven_source_lands_with_the_label_and_the_parser_reads_it_back() {
 }
 
 #[test]
+fn every_accepted_address_form_lands_the_same_collection() {
+    // The three forms a person has, each on its own scratch config so the
+    // written document can be quoted for each one.
+    for (tag, address) in [
+        (
+            "wallhaven-user",
+            "https://wallhaven.cc/user/alice/favorites/12345",
+        ),
+        (
+            "wallhaven-api",
+            "https://wallhaven.cc/api/v1/collections/alice/12345",
+        ),
+        ("wallhaven-pair", "alice/12345"),
+    ] {
+        let (directory, config) = scratch(tag);
+        let socket = directory.join("whirl.sock");
+        let output = source(&config, &socket, &["add-wallhaven", address]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{address}: {}",
+            stderr_of(&output)
+        );
+        let landed = std::fs::read_to_string(&config).expect("the file");
+        assert!(
+            landed.contains("\"kind\": \"wallhaven\""),
+            "{address}: {landed}"
+        );
+        assert!(
+            landed.contains("\"collection\": \"alice/12345\""),
+            "{address}: {landed}"
+        );
+        assert!(
+            one_row(&stdout_of(&output))
+                .starts_with("[x] Wallhaven, a remote collection: alice/12345 ("),
+            "{address}: {}",
+            stdout_of(&output)
+        );
+    }
+}
+
+#[test]
+fn an_address_that_is_not_a_collection_writes_nothing_and_says_which_are_taken() {
+    let (directory, config) = scratch("wallhaven-bad");
+    let socket = directory.join("whirl.sock");
+    let before = std::fs::read(&config).expect("the file");
+    let output = source(
+        &config,
+        &socket,
+        &["add-wallhaven", "https://wallhaven.cc/search?q=nebula"],
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stdout_of(&output));
+    let stderr = stderr_of(&output);
+    // The one sentence names every accepted form.
+    for form in [
+        "https://wallhaven.cc/user/<username>/favorites/<id>",
+        "https://wallhaven.cc/api/v1/collections/<username>/<id>",
+        "<username>/<id>",
+    ] {
+        assert!(stderr.contains(form), "{stderr}");
+    }
+    assert_eq!(std::fs::read(&config).expect("the file"), before);
+    assert!(
+        leftovers(&directory).is_empty(),
+        "{:?}",
+        leftovers(&directory)
+    );
+}
+
+#[test]
+fn an_existing_collection_address_can_be_changed_and_the_key_survives() {
+    let (directory, config) = scratch("wallhaven-change");
+    let socket = directory.join("whirl.sock");
+    let added = source(&config, &socket, &["add-wallhaven", "alice/12345"]);
+    assert_eq!(added.status.code(), Some(0), "{}", stderr_of(&added));
+
+    let changed = source(
+        &config,
+        &socket,
+        &[
+            "set-collection",
+            "wallhaven",
+            "https://wallhaven.cc/user/bob/favorites/9",
+        ],
+    );
+    assert_eq!(changed.status.code(), Some(0), "{}", stderr_of(&changed));
+    assert!(
+        one_row(&stdout_of(&changed)).starts_with("[x] Wallhaven, a remote collection: bob/9 ("),
+        "{}",
+        stdout_of(&changed)
+    );
+    let landed = std::fs::read_to_string(&config).expect("the file");
+    assert!(landed.contains("\"collection\": \"bob/9\""), "{landed}");
+    assert!(!landed.contains("alice/12345"), "{landed}");
+    // Every key the edit did not own is exactly as it was.
+    assert!(
+        landed.contains(&format!("\"api_key_ref\": \"{LABEL}\"")),
+        "{landed}"
+    );
+    assert!(landed.contains("\"_comment_1\""), "{landed}");
+    assert!(landed.contains("\"a_key_no_build_has\""), "{landed}");
+    assert!(!looks_like_a_key(&landed), "{landed}");
+}
+
+#[test]
 fn adding_wallhaven_with_no_id_derives_one_the_schema_accepts() {
-    // The window's own add: a person clicks and chooses nothing, so the id comes
-    // from the source kind, and `wallhaven` is a legal schema id.
+    // The window's own add: a person clicks, pastes an address and chooses no
+    // id, so the id comes from the source kind, and `wallhaven` is a legal
+    // schema id.
     let (directory, config) = scratch("derived-wallhaven");
     let socket = directory.join("whirl.sock");
-    let output = source(&config, &socket, &["add-wallhaven"]);
+    let output = source(&config, &socket, &["add-wallhaven", "alice/12345"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
     let landed = std::fs::read_to_string(&config).expect("the file");
     assert!(landed.contains("\"id\": \"wallhaven\""), "{landed}");
 
     // A second one is numbered rather than refused.
-    let again = source(&config, &socket, &["add-wallhaven"]);
+    let again = source(&config, &socket, &["add-wallhaven", "bob/678"]);
     assert_eq!(again.status.code(), Some(0), "{}", stderr_of(&again));
     let landed = std::fs::read_to_string(&config).expect("the file");
     assert!(landed.contains("\"id\": \"wallhaven-2\""), "{landed}");
+    assert!(landed.contains("\"collection\": \"bob/678\""), "{landed}");
 }
 
 #[test]
@@ -272,7 +393,7 @@ fn changing_a_folder_points_the_source_at_the_chosen_one() {
 
     // Pointing a Wallhaven source at a folder is not an edit the window can
     // explain, so it is refused rather than writing a `paths` key into it.
-    let wallhaven = source(&config, &socket, &["add-wallhaven", "space"]);
+    let wallhaven = source(&config, &socket, &["add-wallhaven", "alice/12345"]);
     assert_eq!(
         wallhaven.status.code(),
         Some(0),
@@ -280,7 +401,11 @@ fn changing_a_folder_points_the_source_at_the_chosen_one() {
         stderr_of(&wallhaven)
     );
     let before = std::fs::read(&config).expect("the file");
-    let wrong_kind = source(&config, &socket, &["set-folder", "space", "/tmp/holiday"]);
+    let wrong_kind = source(
+        &config,
+        &socket,
+        &["set-folder", "wallhaven", "/tmp/holiday"],
+    );
     assert_eq!(
         wrong_kind.status.code(),
         Some(1),

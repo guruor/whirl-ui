@@ -1,13 +1,27 @@
 # whirl-ui design
 
 What this app is meant to look like, and what each thing the design draws would cost in
-configuration. Two sections, and one rule the file exists to enforce: an element is never "future
+configuration. Two sections, and the rule the file exists to enforce: an element is never "future
 work". It either **exists, at a path**, it needs a **named new key**, it needs a **named daemon
-feature**, or it is **not needed**.
+feature**, or it is **not needed**. A second rule, about the person rather than the element, is shared
+with `docs/journeys.md` and stated below.
 
 Written 2026-10-04, from the design reference and the daemon as it stands. Where this document has
 an opinion it says so and leaves the decision open: whether an enhancement is worth building is the
 maintainer's call.
+
+## The rule
+
+An element is designed against a journey, not against the architecture. Before anything a person can
+see is changed, that journey is written down and walked: what the person is trying to do, what they see
+today, what they should see, and what it costs. The journeys this app has today, and the shape a new
+one takes, are in `docs/journeys.md`. A change to something on screen with no journey to read is not
+ready to be designed, however clearly its config key is named: the architecture can say what a control
+does, and only the journey can say whether the person can reach it, find it again, or understand what
+it did.
+
+The rule above, that an element is never "future work", answers what a control costs. This one answers
+whether the person has a way through. Both hold, and neither replaces the other.
 
 ## 1. The visual language
 
