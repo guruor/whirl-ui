@@ -479,6 +479,27 @@ impl App {
     ) -> Result<App, Box<dyn std::error::Error + Send + Sync>> {
         shared.attach(&cc.egui_ctx);
 
+        // `⌘Q` and every other AppKit terminate are put on the app's own quit
+        // flow, and this is the line that says whether that happened. The request
+        // is the one the `Quit` row makes, so every door is the one flow: the
+        // question, the remembered answer, the default of keeping the daemon
+        // running, and the report line. A terminate AppKit carried out itself
+        // would end the process with the question never asked, which is what `⌘Q`
+        // did.
+        let terminate = window::install_terminate_handler({
+            let shared = Arc::clone(&shared);
+            move || shared.request_quit()
+        });
+        eprintln!(
+            "whirl-ui: {} AppKit's terminate is {}",
+            unix_nanos(),
+            if terminate {
+                "the app's own quit flow"
+            } else {
+                "AppKit's own: a ⌘Q cannot ask"
+            }
+        );
+
         // The launch offer, before anything is drawn: the daemon's own command is
         // asked once, here, and its answer is what the menu's line shows. It is
         // not a dialog and it never blocks the menu bar item (`Constraints`): a
