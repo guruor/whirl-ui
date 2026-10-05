@@ -63,7 +63,7 @@ not "being the supervisor": whirl's ADR 0002, decision 3, narrows the rule to it
 it as "a frontend is never the supervisor" (`docs/decisions/0002-frontends-write-config-own-no-daemon.md`,
 lines 343-392, and the implied change to §8 at lines 550-553), so the app may run the product's own
 start/stop step but must never call `launchctl`, `systemctl` or `schtasks` itself (ADR 0002,
-lines 361-362 and 464-469).
+lines 360-361 and 464-469).
 
 The step is `whirl service stop && whirl service start`, and deliberately **not** `whirl daemon
 stop|start`: no `daemon` verb exists or will (`daemon start|stop|restart` are non-goals,
@@ -124,7 +124,8 @@ not carry today.
 **How often.** At most once per launch and at most once per interval. The interval is a named
 constant in the app, `CHECK_INTERVAL_SECONDS = 86400` (24 hours), not a preference, so there is no
 second key to configure. The last-check time is written to the app's preference file (section 3)
-after every check that reached GitHub, on demand as well as on startup. On startup the check runs
+after every check that ran, whether it reached GitHub or could not be made, on demand as well as on
+startup. On startup the check runs
 only when `check_on_startup` is true **and** `now - last_check_at >= CHECK_INTERVAL_SECONDS` (with
 `last_check_at == 0`, never checked, counting as due).
 
@@ -227,7 +228,8 @@ What the values mean, and where they are set:
   version, and by the file-only rule is not drawn.
 - `skipped_version`: written by `Skip This Version`; a startup check that finds exactly this
   version is silent.
-- `last_check_at`: written after every check that reached GitHub, on demand and on startup.
+- `last_check_at`: written after every check that ran, whether it reached GitHub or could not be
+  made, on demand and on startup.
 
 The existing strings above (`CHECK_TITLE`, `CHECK_LABEL`, `CHECK_LINE`, the three `Check::line`
 outcomes) are reused and are not restated or renamed. The new strings are the two prompts' titles,
@@ -252,8 +254,11 @@ required change to `install.sh`; nothing else about its ordering or its refusals
 
 ### The daemon's binaries: unattended
 
-What the app may do, naming the command. The app runs the daemon half of the (updated) `install.sh`
-with the versions pinned to the release it has already decided to install:
+What the app may do, naming the command. `<install.sh>` below is the release's own copy, fetched
+from the tag being installed the way `install.sh:38-40` documents
+(`https://raw.githubusercontent.com/guruor/whirl-ui/<app tag>/install.sh`). It is the copy that
+carries the new `--daemon-only` selector, not a copy the app already has. The app runs the daemon
+half of that script with the versions pinned to the release it has already decided to install:
 
 ```
 WHIRL_VERSION=<daemon tag> WHIRL_UI_VERSION=<app version> /bin/sh <install.sh> --daemon-only
@@ -327,7 +332,7 @@ What `Restart Now` does depends on the installed whirl, and the prompt says whic
   whose exit codes are the CLI's own (`whirl` `crates/whirl-cli/src/main.rs:3-6`): `0` the verb
   completed, `1` the daemon refused, `2` the daemon is unreachable, `3` the command line was wrong.
   The app reports what the step did. It never runs `launchctl`, `systemctl` or `schtasks` itself
-  (ADR 0002, lines 361-362, 464-469).
+  (ADR 0002, lines 360-361, 464-469).
 - **Today, until that step exists** (whirl v0.1's verb list has no `service`,
   `crates/whirl-cli/src/main.rs:29-48`; `install.sh:352-362` says the same), the app runs nothing.
   `Restart Now` shows the person the command to run and the fact that the installed whirl cannot do
