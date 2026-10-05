@@ -2,9 +2,10 @@
 
 M1 to M4 for this repository, written 2026-10-02. M1 is the first slice: the protocol client, the tray
 item and the read-only settings window. M2 makes the settings window a writer, M3 is start at login,
-and M4 is Windows and Linux. A report a tester can send is future work, parked outside the milestone
-sequence, with the list in `docs/research/reporting.md`. What is deliberately out of scope is at the
-end.
+and M4 is Windows and Linux. The app's appearance is not a milestone: it is settled in
+`docs/design.md`, which also holds the reference's extra enhancements. A report a tester can send is
+future work, parked outside the milestone sequence, with the list in `docs/research/reporting.md`.
+What is deliberately out of scope is at the end.
 
 ## Why this file exists
 
@@ -99,6 +100,21 @@ worth building first is the maintainer's call. The survey of what free, cross-pl
 fields a self-sufficient report must carry, the rule and mechanism that keep a secret out, how the
 bundle reaches the developer, and the first slice are in `docs/research/reporting.md` alone and are
 not repeated here.
+
+## Appearance
+
+The app's appearance is settled in `docs/design.md`, not here, and that file is authoritative for it:
+the visual language, and the palette sampled from the maintainer's own reference mockup with the
+command that produced each value recorded beside it. It was written 2026-10-04 from that reference, so
+a later reader can re-derive the numbers rather than read them by eye. The palette there is the
+contract for the dark theme, not a starting point to be improved on.
+
+## The reference's extra functionality
+
+`docs/design.md` also takes each element the reference draws and states what it needs today and what
+config change it would imply. Those items are parked outside the milestone sequence: no milestone in
+this file depends on them, and which of them are worth building is the maintainer's call. The list
+lives in `docs/design.md` alone and is not repeated here.
 
 ## Deliberately out of scope
 
