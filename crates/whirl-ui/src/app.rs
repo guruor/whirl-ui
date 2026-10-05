@@ -40,6 +40,7 @@ use crate::settings::{
     PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, START_LABEL,
     START_LINE, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
 };
+use crate::state::View;
 use crate::theme;
 
 // The window's size and title are the settings module's, because the text dump
@@ -53,6 +54,14 @@ use crate::theme;
 /// is. These two words are the footer's and appear nowhere the text dump reads.
 const CONNECTED: &str = "Connected";
 const NOT_CONNECTED: &str = "Not connected";
+
+/// The reason the window's line carries for a daemon that stopped answering
+/// after the window was opened.
+///
+/// The reason the window was opened with is the client's own, and it is kept
+/// while the connection is unchanged ([`App::set_daemon`]); this is only for the
+/// change the view reports and the client never named to this window.
+const DAEMON_LOST: &str = "the daemon stopped answering";
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {
@@ -119,6 +128,32 @@ impl App {
     /// Close the dialog. The app keeps running.
     pub fn close_settings(&mut self) {
         self.settings = None;
+    }
+
+    /// Point the window's own status line at the app's live view.
+    ///
+    /// The window is a dialog opened on a snapshot of the daemon's state, and
+    /// nothing here re-reads it: the tray is what follows the daemon after that,
+    /// and this is how its one view reaches the window. Only a change of
+    /// *whether* the daemon answered moves the line, so the reason the window was
+    /// opened with is not replaced by a plainer one on the next pass, and a view
+    /// that says what the window already says changes nothing.
+    ///
+    /// The tray is the only caller and it is macOS-only, which is what the
+    /// `allow` covers.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn set_daemon(&mut self, view: &View) {
+        let Some(settings) = self.settings.as_mut() else {
+            return;
+        };
+        let connected = settings.daemon == Daemon::Running;
+        if connected != view.reachable() {
+            settings.daemon = if view.reachable() {
+                Daemon::Running
+            } else {
+                Daemon::NotRunning(DAEMON_LOST.to_string())
+            };
+        }
     }
 
     /// Whether the dialog is on screen. Closing it is a state the app sits in
@@ -1020,6 +1055,61 @@ mod tests {
         Settings::unreachable(
             "the daemon is not reachable: whirl.sock (absent): No such file or directory (os error 2)",
         )
+    }
+
+    /// A live view, for the window's status line: the keys 2.10 prints, in its
+    /// shape.
+    fn running() -> View {
+        View::live(whirlui_client::Status::from_lines(&[
+            "daemon_version: whirl 0.1.0".to_string(),
+            "protocol: 2".to_string(),
+            "seq: 7".to_string(),
+            "paused: 0".to_string(),
+            "favorites_degraded: 0".to_string(),
+            "last_origin_key: pictures:8d9600e8".to_string(),
+            "source: pictures local weight=1 enabled=1 last=- reason=-".to_string(),
+        ]))
+    }
+
+    #[test]
+    fn the_windows_status_line_follows_the_apps_view() {
+        // The window is opened on a snapshot of the daemon's state, and the tray
+        // is what follows the daemon after that. This is how a daemon that
+        // answers, or goes away, moves the line: a window opened on `not
+        // running` cannot keep saying so about a daemon that is up, and the
+        // reverse.
+        let mut app = App::new(window());
+        assert!(
+            matches!(
+                app.settings().expect("an open window").daemon,
+                Daemon::NotRunning(_)
+            ),
+            "the window opens on the snapshot it was read with"
+        );
+
+        app.set_daemon(&running());
+        assert_eq!(
+            app.settings().expect("an open window").daemon,
+            Daemon::Running
+        );
+
+        app.set_daemon(&View::offline());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            format!("whirl is not running: {DAEMON_LOST}")
+        );
+
+        // A view that says what the window already says leaves the reason the
+        // window was opened with alone, and a window with no dialog is not
+        // touched at all.
+        let mut quiet = App::new(window());
+        let before = quiet.settings().expect("an open window").daemon.clone();
+        quiet.set_daemon(&View::offline());
+        assert_eq!(quiet.settings().expect("an open window").daemon, before);
+
+        let mut closed = App::closed();
+        closed.set_daemon(&View::offline());
+        assert!(closed.settings().is_none());
     }
 
     #[test]
