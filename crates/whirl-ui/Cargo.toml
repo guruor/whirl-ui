@@ -56,14 +56,29 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # crate does expose (`TrayIcon::ns_status_item`) is called through the same
 # bindings `tray-icon` is built on: the same versions, already in the graph, and
 # the accessibility protocol is the feature that carries the setter.
+#
+# The folder panel is the second use of the same bindings, and the reason its
+# features are listed below. `settings::ask_the_panel` is one call to
+# `NSOpenPanel`, and these features are the classes it stands on: `NSOpenPanel`
+# and its `NSSavePanel`/`NSPanel`/`NSWindow`/`NSResponder` superclasses, plus
+# `NSApplication`, which is what `runModal`'s own gate names. No new framework
+# arrives with any of them: AppKit is already linked, through `tray-icon` and
+# through eframe's winit, so this is one more call into a framework already on
+# the machine rather than a second copy of the platform bindings.
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.26", default-features = false }
 winit = { version = "0.30", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSAccessibilityProtocols",
+    "NSApplication",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSResponder",
+    "NSSavePanel",
     "NSStatusBarButton",
     "NSStatusItem",
+    "NSWindow",
 ] }
 # `NSBundle` is here for one question the login item answers before it registers
 # anything: is this executable inside an app bundle at all, and which one. Without
