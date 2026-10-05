@@ -116,7 +116,7 @@ jobs:
     needs: [guard]
     steps:
       - uses: actions/checkout@v5
-      - name: Refuse a release whose install.sh installs another release
+      - name: Refuse a release whose install.sh installs the wrong releases
         shell: bash
         env:
           # The version reaches this step the way it reaches `bundle`: from the tag on a
