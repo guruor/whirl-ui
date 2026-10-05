@@ -22,10 +22,20 @@
 //! defect: the desktop comes forward with a window that is still behind
 //! everything else.
 //!
-//! Both live behind a seam a test can drive -- the rule as a value, the raise as
+//! And the app has one way out, whichever door is used. `⌘Q`, and every other
+//! AppKit terminate, are answered by `applicationShouldTerminate:` rather than by
+//! the tray's `Quit` row, so `install_terminate_handler` adds that method to the
+//! delegate class and [`answer_terminate`] is what it answers with: run the app's
+//! own quit flow, and never let AppKit carry the terminate out. That flow's own
+//! close is what ends the process, so a terminate AppKit carried out would be a
+//! second exit that skipped the question, the remembered answer and the report
+//! line -- which is the exit `⌘Q` was.
+//!
+//! Each lives behind a seam a test can drive -- the rule as a value, the raise as
 //! a trait that the AppKit implementation and a recorder both satisfy -- because
-//! the property under test is what the app asks for and what the raise does, and
-//! a headless test cannot put either question to the window server.
+//! the property under test is what the app asks for and what the raise and the
+//! terminate do, and a headless test cannot put any of those questions to the
+//! window server.
 
 #![cfg_attr(
     not(target_os = "macos"),
@@ -143,6 +153,30 @@ pub fn settings_asked(window_open: bool, window: &dyn Window) -> Option<Vec<Step
     window_open.then(|| raise(window))
 }
 
+/// What the app answers a terminate with, and the request that goes with the
+/// answer.
+///
+/// AppKit asks once, through `applicationShouldTerminate:`, and the answer is
+/// the one the tray's `Quit` row already gives: run *that* flow -- the question,
+/// the remembered answer, the default of keeping the daemon running, and the
+/// report line -- and refuse the terminate. The flow's own close is what ends the
+/// process: the tray's own quit is what sends `ViewportCommand::Close`, once the
+/// plan has run, and AppKit's terminate sends nothing. So a terminate AppKit
+/// carried out would be a second exit that skipped all of it. That second exit
+/// is what `⌘Q` was.
+///
+/// `request` is the app's own request and not a second one: the tray hands over
+/// the same `request_quit` the row calls, so the two doors cannot drift apart.
+///
+/// The return value is whether AppKit may carry the terminate out, and it is
+/// always `false`. It is a value rather than a comment so the test below asserts
+/// the direction instead of reading a doc line: `true` here is the defect, and it
+/// is one character wide.
+pub fn answer_terminate(request: &dyn Fn()) -> bool {
+    request();
+    false
+}
+
 /// The AppKit side: the policy call, and the window a raise acts on.
 ///
 /// Raw AppKit rather than a viewport command, because neither of the two things
@@ -154,7 +188,9 @@ pub fn settings_asked(window_open: bool, window: &dyn Window) -> Option<Vec<Step
 #[cfg(target_os = "macos")]
 mod appkit {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    use objc2_app_kit::{
+        NSApplication, NSApplicationActivationPolicy, NSApplicationTerminateReply,
+    };
     use objc2_foundation::NSString;
 
     use super::{Policy, Window};
@@ -252,14 +288,122 @@ mod appkit {
             true
         }
     }
+
+    /// The request a terminate runs, once the handler is installed.
+    ///
+    /// A slot in the process rather than a field on something, because the method
+    /// that reads it is a bare `extern "C"` function:
+    /// `applicationShouldTerminate:` is added to the delegate class at runtime
+    /// (`install_terminate_handler`), and a method added that way has no `self`
+    /// of this app's to carry the request. It is filled before the method goes
+    /// in, so a terminate cannot find it empty.
+    static TERMINATE_REQUEST: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
+        std::sync::OnceLock::new();
+
+    /// The shape of the method, so the function below can be turned into an `Imp`.
+    ///
+    /// The two parameters are raw pointers rather than references because
+    /// `objc2`'s `MethodImplementation` is not implemented for a function
+    /// pointer that is higher-ranked over lifetimes -- `fn(&AnyObject, Sel,
+    /// &AnyObject)` is, and it is rejected with "implementation of
+    /// `MethodImplementation` is not general enough" -- while a raw pointer
+    /// carries no lifetime and is. It is the same argument, spelled the one way
+    /// the trait takes.
+    type ShouldTerminate = unsafe extern "C-unwind" fn(
+        *mut objc2::runtime::AnyObject,
+        objc2::runtime::Sel,
+        *mut objc2::runtime::AnyObject,
+    ) -> NSApplicationTerminateReply;
+
+    /// The app's answer to `applicationShouldTerminate:`: run the app's own quit
+    /// flow, and refuse the terminate.
+    ///
+    /// `install_terminate_handler` adds this under the encoding
+    /// `NSApplicationTerminateReply (id, SEL, NSApplication *)`, which is
+    /// `"Q@:@"`: `NSApplicationTerminateReply` is an `NSUInteger`-backed
+    /// `NS_ENUM`, and on a 64-bit target `usize` encodes as `Q` (`objc2`'s own
+    /// `Encode for usize` picks `u64`). The two arguments are unused: the
+    /// question is the app's, not the sender's.
+    ///
+    /// The arm with nothing installed answers `TerminateNow`, and it is
+    /// unreachable while the method exists. It is there so that a terminate which
+    /// somehow arrives with no flow behind it is a plain quit, rather than an app
+    /// that will not close.
+    unsafe extern "C-unwind" fn should_terminate(
+        _this: *mut objc2::runtime::AnyObject,
+        _cmd: objc2::runtime::Sel,
+        _sender: *mut objc2::runtime::AnyObject,
+    ) -> NSApplicationTerminateReply {
+        match TERMINATE_REQUEST.get() {
+            Some(request) if !super::answer_terminate(request.as_ref()) => {
+                NSApplicationTerminateReply::TerminateCancel
+            }
+            _ => NSApplicationTerminateReply::TerminateNow,
+        }
+    }
+
+    /// Put AppKit's terminate on the app's own quit flow.
+    ///
+    /// `applicationShouldTerminate:` is added to the running application's
+    /// delegate class, because that delegate is winit's and not this app's:
+    /// eframe gives the event loop no delegate of its own, and replacing winit's
+    /// would take the loop's own machinery with it -- winit's delegate is where
+    /// its `AppState` lives. winit answers `applicationDidFinishLaunching:` and
+    /// `applicationWillTerminate:` and not this method, so without it AppKit's
+    /// answer to `terminate:` is "now". That selector is what the main menu's
+    /// `Quit` item sends on `⌘Q`, so the whole of the process ended with the
+    /// question never asked: this is what was wrong with `⌘Q`.
+    ///
+    /// `request` is `tray::Shared::request_quit`, the request the row makes, so
+    /// the two doors cannot drift apart. Returns whether *this call* opened the
+    /// door: `false` means AppKit's own answer stands -- the delegate's class
+    /// already answers the method, or there is no application to put it on -- and
+    /// the caller should say so rather than assume a `⌘Q` now asks.
+    pub fn install_terminate_handler(request: impl Fn() + Send + Sync + 'static) -> bool {
+        use objc2::runtime::{AnyClass, AnyObject, Imp, MethodImplementation};
+        use objc2::sel;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return false;
+        };
+        let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() else {
+            return false;
+        };
+        let object: &AnyObject = AsRef::<AnyObject>::as_ref(&*delegate);
+        let method = sel!(applicationShouldTerminate:);
+        let class = object.class();
+        // One door per process: either the method is already there -- ours, or a
+        // winit that has grown one -- or it goes in below.
+        if class.instance_method(method).is_some() {
+            return false;
+        }
+        if TERMINATE_REQUEST.set(Box::new(request)).is_err() {
+            return false;
+        }
+        let imp: Imp = (should_terminate as ShouldTerminate).__imp();
+        // SAFETY: `class` is the delegate's own class, and the method is one
+        // AppKit itself calls on a delegate; `imp` is `should_terminate` above,
+        // whose signature is the one the encoding declares. `class_addMethod` is
+        // the runtime's call for exactly this: a method added to a class that is
+        // already registered (`class_addIvar` is the one that needs it before).
+        let added = unsafe {
+            objc2::ffi::class_addMethod(
+                class as *const AnyClass as *mut AnyClass,
+                method,
+                imp,
+                c"Q@:@".as_ptr(),
+            )
+        };
+        added.as_bool()
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub use appkit::{AppKit, apply};
+pub use appkit::{AppKit, apply, install_terminate_handler};
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -370,5 +514,23 @@ mod tests {
         let on_screen = Recorded::default();
         let took = settings_asked(true, &on_screen).expect("raised");
         assert!(!took.contains(&Step::Unminimise), "{took:?}");
+    }
+
+    #[test]
+    fn a_terminate_asks_the_apps_own_quit_flow_and_is_not_carried_out_by_appkit() {
+        // `⌘Q` is not a second way out. AppKit's terminate makes the same request
+        // the tray's `Quit` row makes, and is then refused, so the flow's own
+        // close is what ends the process rather than AppKit's terminate.
+        let asked = Cell::new(0);
+        let may_terminate = answer_terminate(&|| asked.set(asked.get() + 1));
+        assert_eq!(
+            asked.get(),
+            1,
+            "AppKit's terminate asked for the app's own quit flow"
+        );
+        assert!(
+            !may_terminate,
+            "and AppKit did not carry it out: the flow's close ends the process"
+        );
     }
 }

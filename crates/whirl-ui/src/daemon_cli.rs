@@ -17,7 +17,10 @@
 //! refusal is shown rather than replaced with a route of the app's own.
 //!
 //! Nothing here writes a unit file, unlinks a socket, or kills a process, and
-//! nothing here knows a socket path: the daemon's lifecycle is the daemon's.
+//! this module never reads or opens the control socket: the daemon's lifecycle
+//! is the daemon's. Watching whether the socket file is *there* is a different
+//! thing, and it is not here: it is the tray's one observation, a `stat` that
+//! takes the app's view offline, and it changes nothing about the daemon.
 
 use std::env;
 use std::ffi::OsStr;

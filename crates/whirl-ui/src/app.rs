@@ -40,6 +40,7 @@ use crate::settings::{
     PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, START_LABEL,
     START_LINE, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
 };
+use crate::state::View;
 use crate::theme;
 
 // The window's size and title are the settings module's, because the text dump
@@ -53,6 +54,14 @@ use crate::theme;
 /// is. These two words are the footer's and appear nowhere the text dump reads.
 const CONNECTED: &str = "Connected";
 const NOT_CONNECTED: &str = "Not connected";
+
+/// The reason the window's line carries for a daemon that stopped answering
+/// after the window was opened.
+///
+/// The reason the window was opened with is the client's own, and it is kept
+/// while the connection is unchanged ([`App::set_daemon`]); this is only for the
+/// change the view reports and the client never named to this window.
+const DAEMON_LOST: &str = "the daemon stopped answering";
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {
@@ -119,6 +128,43 @@ impl App {
     /// Close the dialog. The app keeps running.
     pub fn close_settings(&mut self) {
         self.settings = None;
+    }
+
+    /// Point the window's own status line at the app's live view.
+    ///
+    /// The window is a dialog opened on a snapshot of the daemon's state, and
+    /// nothing here re-reads it: the tray is what follows the daemon after that,
+    /// and this is how its one view reaches the window. Only a change of what
+    /// the line says moves it, so the reason the window was opened with is not
+    /// replaced by a plainer one on the next pass, and a view that says what the
+    /// window already says changes nothing: a daemon that answered and was
+    /// paused moves the line to the paused form, exactly as one that stopped
+    /// answering moves it to the not-running form.
+    ///
+    /// The tray is the only caller and it is macOS-only, which is what the
+    /// `allow` covers.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn set_daemon(&mut self, view: &View) {
+        let Some(settings) = self.settings.as_mut() else {
+            return;
+        };
+        if view.reachable() {
+            // The daemon answered: the line follows whether its schedule is
+            // paused, which is the same bit the mark reads.
+            let answered = if view.paused() {
+                Daemon::Paused
+            } else {
+                Daemon::Running
+            };
+            if settings.daemon != answered {
+                settings.daemon = answered;
+            }
+        } else if settings.daemon.answered() {
+            // The reason the window was opened with stays while the daemon is
+            // already not answering; only a change replaces it with the one this
+            // window names itself.
+            settings.daemon = Daemon::NotRunning(DAEMON_LOST.to_string());
+        }
     }
 
     /// Whether the dialog is on screen. Closing it is a state the app sits in
@@ -337,7 +383,7 @@ fn nav_row(ui: &mut egui::Ui, pane: Pane, active: bool) -> bool {
 
 /// The footer: a status light, the connection state in a word, and the version.
 fn footer(ui: &mut egui::Ui, settings: &Settings) {
-    let connected = matches!(settings.daemon, Daemon::Running);
+    let connected = settings.daemon.answered();
     ui.add_space(theme::SPACE_MD);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -749,7 +795,7 @@ fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
 /// state is what that sentence looks like when the socket did not answer, and it
 /// is drawn as an error card rather than a status light.
 fn app_pane(ui: &mut egui::Ui, settings: &mut Settings) {
-    let connected = matches!(settings.daemon, Daemon::Running);
+    let connected = settings.daemon.answered();
     let outline = if connected {
         theme::HAIRLINE
     } else {
@@ -1020,6 +1066,108 @@ mod tests {
         Settings::unreachable(
             "the daemon is not reachable: whirl.sock (absent): No such file or directory (os error 2)",
         )
+    }
+
+    /// A live view, for the window's status line: the keys 2.10 prints, in its
+    /// shape.
+    fn running() -> View {
+        View::live(whirlui_client::Status::from_lines(&[
+            "daemon_version: whirl 0.1.0".to_string(),
+            "protocol: 2".to_string(),
+            "seq: 7".to_string(),
+            "paused: 0".to_string(),
+            "favorites_degraded: 0".to_string(),
+            "last_origin_key: pictures:8d9600e8".to_string(),
+            "source: pictures local weight=1 enabled=1 last=- reason=-".to_string(),
+        ]))
+    }
+
+    /// The same snapshot with the schedule suspended: what `View` holds after a
+    /// `pause` the tray re-read.
+    fn paused() -> View {
+        View::live(whirlui_client::Status::from_lines(&[
+            "daemon_version: whirl 0.1.0".to_string(),
+            "protocol: 2".to_string(),
+            "seq: 7".to_string(),
+            "paused: 1".to_string(),
+            "favorites_degraded: 0".to_string(),
+            "last_origin_key: pictures:8d9600e8".to_string(),
+            "source: pictures local weight=1 enabled=1 last=- reason=-".to_string(),
+        ]))
+    }
+
+    #[test]
+    fn a_pause_moves_the_windows_line_the_way_it_moves_the_mark() {
+        // The tray re-reads the daemon on the connection that performed
+        // `pause`/`resume`, so the view reaching the window is the paused one.
+        // The line has to follow it: a window that keeps saying `running` while
+        // the daemon is paused is the status lagging the daemon.
+        let mut app = App::new(window());
+        app.set_daemon(&running());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            "whirl is running"
+        );
+
+        app.set_daemon(&paused());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            "whirl is paused"
+        );
+
+        // The resume is the same move back, and a daemon that stops answering
+        // still moves the line to the not-running form.
+        app.set_daemon(&running());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            "whirl is running"
+        );
+        app.set_daemon(&View::offline());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            format!("whirl is not running: {DAEMON_LOST}")
+        );
+    }
+
+    #[test]
+    fn the_windows_status_line_follows_the_apps_view() {
+        // The window is opened on a snapshot of the daemon's state, and the tray
+        // is what follows the daemon after that. This is how a daemon that
+        // answers, or goes away, moves the line: a window opened on `not
+        // running` cannot keep saying so about a daemon that is up, and the
+        // reverse.
+        let mut app = App::new(window());
+        assert!(
+            matches!(
+                app.settings().expect("an open window").daemon,
+                Daemon::NotRunning(_)
+            ),
+            "the window opens on the snapshot it was read with"
+        );
+
+        app.set_daemon(&running());
+        assert_eq!(
+            app.settings().expect("an open window").daemon,
+            Daemon::Running
+        );
+
+        app.set_daemon(&View::offline());
+        assert_eq!(
+            app.settings().expect("an open window").daemon.line(),
+            format!("whirl is not running: {DAEMON_LOST}")
+        );
+
+        // A view that says what the window already says leaves the reason the
+        // window was opened with alone, and a window with no dialog is not
+        // touched at all.
+        let mut quiet = App::new(window());
+        let before = quiet.settings().expect("an open window").daemon.clone();
+        quiet.set_daemon(&View::offline());
+        assert_eq!(quiet.settings().expect("an open window").daemon, before);
+
+        let mut closed = App::closed();
+        closed.set_daemon(&View::offline());
+        assert!(closed.settings().is_none());
     }
 
     #[test]
