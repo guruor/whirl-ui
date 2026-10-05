@@ -22,7 +22,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use support::{Daemon, daemon_binary};
-use whirlui_client::protocol::ErrorCode;
+use whirlui_client::protocol::{ErrorCode, PRODUCT};
 use whirlui_client::{Action, Client, ClientError, Event, Subscription, Update};
 
 /// Say why a test did nothing, so a skipped run is visible rather than silent.
@@ -53,6 +53,41 @@ fn value<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
         .find_map(|line| line.strip_prefix(&format!("{key}: ")))
 }
 
+/// Assert a `daemon_version` value is the documented `<product> <semver>`
+/// (docs/architecture.md 2.10).
+///
+/// The number is the daemon's own and this suite cannot predict it: the client
+/// pins a revision of `whirl-core`, and the daemon these tests run against is
+/// whatever release the machine has installed, which is a different release. So
+/// what is pinned is that the daemon answers with its own version in the
+/// documented form and names itself: the product is compared against the
+/// protocol's own `PRODUCT`, and the version is required to be a semver rather
+/// than a number this build could only have guessed.
+fn assert_daemon_version(line: Option<&str>, context: &str) {
+    let value = line.unwrap_or_else(|| panic!("no daemon_version line: {context}"));
+    let (product, version) = value.split_once(' ').unwrap_or_else(|| {
+        panic!("daemon_version is `<product> <semver>`, got {value:?}: {context}")
+    });
+    assert_eq!(product, PRODUCT, "the daemon names itself: {context}");
+    assert!(
+        is_semver(version),
+        "daemon_version carries the daemon's own semver, got {version:?}: {context}"
+    );
+}
+
+/// Whether `text` is `MAJOR.MINOR.PATCH`, three dot-separated runs of digits.
+fn is_semver(text: &str) -> bool {
+    let mut parts = text.split('.');
+    let (Some(major), Some(minor), Some(patch), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    [major, minor, patch]
+        .iter()
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// The greeting is read before anything is written, and `hello` is what follows
 /// it (2.3, 2.4). Reaching the line after `connect_to` is the evidence: that call
 /// reads the greeting, refuses a protocol this client does not know, sends
@@ -81,7 +116,7 @@ fn reads_status() {
     let mut client = Client::connect_to(&daemon.socket()).expect("a negotiated client");
 
     let status = client.status().expect("status");
-    assert_eq!(status.get("daemon_version"), Some("whirl 0.1.0"));
+    assert_daemon_version(status.get("daemon_version"), "status");
     assert_eq!(status.protocol(), Some(2));
     assert_eq!(status.get("favorites_degraded"), Some("0"));
     assert!(!status.paused(), "{status:?}");
@@ -139,7 +174,7 @@ fn the_verbs_milestone_1_needs_are_answered_by_a_real_daemon() {
 
     // `version` (2.11 A) and `ping` (2.5).
     let version = client.version().expect("version");
-    assert_eq!(value(&version, "daemon_version"), Some("whirl 0.1.0"));
+    assert_daemon_version(value(&version, "daemon_version"), "version");
     assert_eq!(value(&version, "protocol"), Some("2"));
     client.ping().expect("ping");
 
@@ -345,7 +380,7 @@ fn a_real_subscription_hands_back_the_daemons_events() {
     let mut subscription = Subscription::open_at(&daemon.socket(), None).expect("a subscription");
     match subscription.next() {
         Update::Status(status) => {
-            assert_eq!(status.get("daemon_version"), Some("whirl 0.1.0"));
+            assert_daemon_version(status.get("daemon_version"), "the subscription snapshot");
             assert!(!status.paused(), "{status:?}");
         }
         other => panic!("the first update is the snapshot, got {other:?}"),
