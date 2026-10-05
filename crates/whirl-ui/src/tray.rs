@@ -742,6 +742,19 @@ impl App {
             raised.map_or_else(String::new, |steps| format!(", raised {steps:?}"))
         );
     }
+
+    /// End the process: the app's own quit, and the close that carries it out.
+    ///
+    /// `app` is told the app is going first, so the close is read as the app's
+    /// rather than the window's: the window's own rule would answer it by hiding
+    /// the viewport, and the app would stay up. Both quits use this -- the one
+    /// that answered the question, and the one that found no daemon to ask
+    /// about -- so the two ends are the same end.
+    fn end(&mut self, ctx: &egui::Context) {
+        self.dialog.quit();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
+    }
 }
 
 /// Ask for one pass from a thread that outlives the app's creation.
@@ -1032,20 +1045,39 @@ impl eframe::App for App {
         }
 
         // The `Quit` row. The one question is asked here, on the UI thread,
-        // before anything closes, and only when no answer is remembered: with
-        // "don't ask again" ticked once, every later quit behaves as remembered
-        // and shows nothing. `app` is told the app is going first, so the close
-        // sent below is read as the app's: the window's own rule would answer it
-        // by hiding the viewport, and the app would stay up.
+        // before anything closes, and only when it means something: no answer is
+        // remembered, and the view the mark is drawn from says a daemon is
+        // answering (`daemon_cli::quit_prompt`). With "don't ask again" ticked
+        // once, every later quit behaves as remembered and shows nothing. With no
+        // daemon answering there is nothing to ask about, so the quit stops
+        // nothing and says what the view saw instead. `app` is told the app is
+        // going first, so the close sent below is read as the app's: the window's
+        // own rule would answer it by hiding the viewport, and the app would stay
+        // up.
         if self.shared.take_quit_request() {
             let remembered = prefs::quit_answer();
-            let choice = match remembered {
-                // The question has been answered for good; it is not asked.
-                Some(stop) => QuitChoice::Quit {
-                    stop,
+            let view = self.shared.view();
+            let choice = match daemon_cli::quit_prompt(remembered, view.reachable()) {
+                daemon_cli::QuitPrompt::Ask => ask_quit(),
+                // The question has been answered for good; it is not asked, and
+                // the remembered answer is honoured exactly as before.
+                daemon_cli::QuitPrompt::Remembered => QuitChoice::Quit {
+                    stop: remembered == Some(true),
                     remember: false,
                 },
-                None => ask_quit(),
+                // No daemon is answering the view, so the question would be
+                // about a daemon that is not there. Nothing is asked and nothing
+                // is stopped, and one line names what the view saw so a quiet
+                // quit is never read as a daemon stopped in secret.
+                daemon_cli::QuitPrompt::NoDaemon => {
+                    eprintln!(
+                        "whirl-ui: {} {}",
+                        unix_nanos(),
+                        nothing_stopped_line(&view.image_line())
+                    );
+                    self.end(ctx);
+                    return;
+                }
             };
             let (stop, remember) = match choice {
                 QuitChoice::Cancel => {
@@ -1069,9 +1101,7 @@ impl eframe::App for App {
                     report_alert("whirl could not be stopped", outcome.words());
                 }
             }
-            self.dialog.quit();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            ctx.request_repaint();
+            self.end(ctx);
             return;
         }
 
@@ -1128,6 +1158,19 @@ fn build_menu(rows: &[Row]) -> Menu {
 /// the one the framework last heard about.
 fn visibility(dialog_open: bool, stated: Option<bool>) -> Option<bool> {
     (stated != Some(dialog_open)).then_some(dialog_open)
+}
+
+/// The one line a quit prints when it does not ask, because the view says no
+/// daemon is answering: what the view saw, and that nothing was stopped.
+///
+/// The line is the point of the no-daemon arm. A quit that said nothing there
+/// could be read as one that stopped a daemon in silence, which is exactly the
+/// reading the question existed to prevent; naming what the view saw rules it
+/// out without asking a question about a daemon that is not there. The `seen`
+/// text is the view's own line (`View::image_line`), so the report and the mark
+/// are the same reading of the same view.
+fn nothing_stopped_line(seen: &str) -> String {
+    format!("nothing was stopped: {seen}")
 }
 
 /// Wall-clock nanoseconds, the clock the timing in `docs/milestones.md` M1
@@ -1273,6 +1316,37 @@ mod tests {
         assert_eq!(visibility(false, Some(false)), None);
         // A dialog that closed takes the window off the screen again.
         assert_eq!(visibility(false, Some(true)), Some(false));
+    }
+
+    #[test]
+    fn a_quit_with_no_daemon_says_what_it_saw_and_that_nothing_was_stopped() {
+        // The no-daemon arm's whole report: the view's own line, so the quit and
+        // the mark are reading the same view, and the word that says nothing was
+        // stopped, so the silence after a quit is never mistaken for a daemon
+        // that was stopped without being asked about.
+        let offline = View::offline();
+        let line = nothing_stopped_line(&offline.image_line());
+        assert!(line.contains("nothing was stopped"), "{line}");
+        assert!(line.contains("the daemon is not running"), "{line}");
+    }
+
+    #[test]
+    fn the_quit_question_follows_the_view_the_mark_is_drawn_from() {
+        // The gate is the view the mark reads (`icon::Mark::of`), not a call the
+        // quit makes of its own: an offline view is the unreachable mark and no
+        // daemon to ask about, a live view is the running or paused mark and a
+        // daemon to ask. This is the crate's pin for the no-daemon-no-question
+        // case and for the reachable case.
+        assert_eq!(
+            daemon_cli::quit_prompt(None, View::offline().reachable()),
+            daemon_cli::QuitPrompt::NoDaemon,
+            "no daemon in the view: the question is not asked"
+        );
+        assert_eq!(
+            daemon_cli::quit_prompt(None, View::live(status_for_report()).reachable()),
+            daemon_cli::QuitPrompt::Ask,
+            "a daemon answering the view: the question is asked"
+        );
     }
 
     /// A daemon snapshot with the pause flag this test needs, in 2.10's shape.

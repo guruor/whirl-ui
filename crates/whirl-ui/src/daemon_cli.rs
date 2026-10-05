@@ -407,6 +407,42 @@ pub fn quit_plan(remembered: Option<bool>, answer: QuitAnswer, remember: bool) -
     }
 }
 
+/// What the quit flow does about its question, decided before anything closes.
+///
+/// The question is the tray's, and the tray is macOS-only, so the two other legs
+/// compile this type and the call below and never reach them. The tests here are
+/// the second caller on every platform that can run them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS quit question and by the tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitPrompt {
+    /// No answer is remembered and the view says a daemon is answering: ask.
+    Ask,
+    /// An answer is remembered: do not ask again; the answer decides the plan.
+    Remembered,
+    /// No answer is remembered and the view says no daemon is answering: do not
+    /// ask, because a question about a daemon that is not there is noise, and do
+    /// not stop, because there is nothing to stop. The caller reports what the
+    /// view saw so a quiet quit is never read as a hidden daemon stopped.
+    NoDaemon,
+}
+
+/// Whether the quit flow asks its question, from the remembered answer and
+/// whether the app's view says a daemon is answering.
+///
+/// The view is the tray's own: the one the mark is drawn from, which the app
+/// re-reads after every verb and watches the socket for. The rule is the whole
+/// of what makes the question mean something: a remembered answer is the answer
+/// and is not asked again, and with no daemon answering there is nothing to ask
+/// about.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS quit question and by the tests.
+pub fn quit_prompt(remembered: Option<bool>, daemon_answering: bool) -> QuitPrompt {
+    match remembered {
+        Some(_) => QuitPrompt::Remembered,
+        None if daemon_answering => QuitPrompt::Ask,
+        None => QuitPrompt::NoDaemon,
+    }
+}
+
 /// What the app did about the daemon when it started.
 ///
 /// The first run is the only one that starts anything on its own. After that a
@@ -596,6 +632,44 @@ unit delegated
                 stop: true,
                 remember: Some(true)
             }
+        );
+    }
+
+    #[test]
+    fn the_question_is_asked_only_with_a_daemon_and_no_remembered_answer() {
+        // The gate the whole card turns on. With no daemon answering the view,
+        // the question is not asked and nothing is stopped, whatever this quit
+        // would have answered; a remembered answer is the answer and is not
+        // asked again either.
+        assert_eq!(
+            quit_prompt(None, true),
+            QuitPrompt::Ask,
+            "no answer remembered and a daemon answering: ask"
+        );
+        assert_eq!(
+            quit_prompt(None, false),
+            QuitPrompt::NoDaemon,
+            "no daemon answering: nothing to ask about"
+        );
+        assert_eq!(
+            quit_prompt(Some(true), true),
+            QuitPrompt::Remembered,
+            "a remembered stop is honoured, not asked"
+        );
+        assert_eq!(
+            quit_prompt(Some(false), true),
+            QuitPrompt::Remembered,
+            "a remembered keep is honoured, not asked"
+        );
+        assert_eq!(
+            quit_prompt(Some(true), false),
+            QuitPrompt::Remembered,
+            "a remembered answer is honoured even with no daemon"
+        );
+        assert_eq!(
+            quit_prompt(Some(false), false),
+            QuitPrompt::Remembered,
+            "and so is a remembered keep"
         );
     }
 }
