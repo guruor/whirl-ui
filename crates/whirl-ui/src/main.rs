@@ -21,11 +21,14 @@
 mod about;
 mod app;
 mod config_file;
+mod daemon_cli;
 mod dump;
 mod icon;
 mod keychain;
 mod login_item;
 mod menu;
+#[cfg(target_os = "macos")]
+mod prefs;
 mod settings;
 mod state;
 mod theme;
@@ -50,8 +53,9 @@ usage: whirl-ui [mode]
 
 With no mode the app starts its menu bar item (macOS). Its `Settings…` row opens
 the settings window on the config file; the sources and the rotation there are
-what it writes, and closing the window does not quit the app. The app never
-starts a daemon.
+what it writes, and closing the window does not quit the app. The app starts no
+daemon of its own: when none is answering it offers a `Start whirl` row, and that
+row asks the daemon's own command for the job.
 
 modes:
   --menu-dump           print the menu bar item's rows, in menu order
@@ -101,6 +105,20 @@ modes:
                         put on through the same method the control it shows calls
   --check-update        make the release check the About pane's button makes,
                         print its one line, and exit. It needs no daemon.
+  --daemon <verb>       the daemon's own lifecycle command, run as
+                        `whirl daemon <verb>`: start, stop or status. Exit 0
+                        when the step was done, 1 when whirl refused, 2 when
+                        there is no supervised daemon to reach, 3 when the verb
+                        or its arguments do not make a command line. This is
+                        the same call the menu's `Start whirl` row and the
+                        window's control make.
+  --launch              the launch offer: ask `whirl daemon status`, and on the
+                        app's first run start an absent daemon (macOS)
+  --quit [--stop|--keep] [--dont-ask]
+                        the quit path without a dialog: stop the daemon when
+                        `--stop` (or the remembered answer) says so, and
+                        remember the answer when `--dont-ask` is given (macOS)
+  --quit-answer         the remembered quit answer, if one was remembered (macOS)
   -h, --help            print this
 
 The dump modes talk to a running daemon: exit 0 on success, 1 if the daemon
@@ -155,6 +173,41 @@ fn main() -> ExitCode {
 
     if first == "--login-item" {
         return login_item_command(&args[1..]);
+    }
+
+    if first == "--daemon" {
+        return daemon_command(&args[1..]);
+    }
+
+    #[cfg(target_os = "macos")]
+    if first == "--launch" {
+        if args.len() != 1 {
+            eprintln!("whirl-ui: --launch takes no arguments");
+            return ExitCode::from(EXIT_USAGE);
+        }
+        return launch_command();
+    }
+
+    #[cfg(target_os = "macos")]
+    if first == "--quit" {
+        return quit_command(&args[1..]);
+    }
+
+    #[cfg(target_os = "macos")]
+    if first == "--quit-answer" {
+        if args.len() != 1 {
+            eprintln!("whirl-ui: --quit-answer takes no arguments");
+            return ExitCode::from(EXIT_USAGE);
+        }
+        return quit_answer_command();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    if first == "--launch" || first == "--quit" || first == "--quit-answer" {
+        eprintln!(
+            "whirl-ui: the daemon's lifecycle is asked for through the tray, which is macOS-only for now; try --daemon <verb>"
+        );
+        return ExitCode::from(EXIT_USAGE);
     }
 
     if first == "--screenshot" {
@@ -634,6 +687,138 @@ fn login_item_command(args: &[String]) -> ExitCode {
 
 /// The `--login-item` verbs, as the usage line spells them.
 const LOGIN_ITEM_VERBS: &str = "--login-item takes a verb: status, register or unregister";
+
+/// `whirl daemon <verb>`, the daemon's own lifecycle command, without a tray.
+///
+/// The mode is the same call the menu's `Start whirl` row and the window's
+/// control make, so what a terminal prints here is what the window would show
+/// after the same click. It makes no decision of its own: the command's words
+/// are printed as it said them, and the exit code is the one section 8 item 7
+/// gives that outcome.
+fn daemon_command(args: &[String]) -> ExitCode {
+    let Some(verb) = args.first().and_then(|word| daemon_cli::Verb::parse(word)) else {
+        return usage(DAEMON_VERBS);
+    };
+    if args.len() > 1 {
+        return usage(DAEMON_VERBS);
+    }
+    let outcome = daemon_cli::run(verb);
+    // The daemon's own words verbatim, on the stream the code's meaning uses:
+    // what was done on stdout, a refusal on stderr. No `whirl-ui:` prefix, so
+    // the line reads exactly as the command said it.
+    if outcome.done() {
+        print_line(outcome.words());
+    } else {
+        eprintln!("{}", outcome.words());
+    }
+    ExitCode::from(outcome.exit_code())
+}
+
+/// The `--daemon` verbs, as the usage line spells them.
+const DAEMON_VERBS: &str = "--daemon takes a verb: start, stop or status";
+
+/// The launch offer, without a tray.
+///
+/// On the app's first run an absent daemon is started through the daemon's own
+/// command and the answer is printed; after that a daemon that is absent is
+/// reported and left alone. A daemon the supervisor already runs is never
+/// touched.
+#[cfg(target_os = "macos")]
+fn launch_command() -> ExitCode {
+    match daemon_cli::launch() {
+        daemon_cli::Launched::Present(words) => {
+            print_line(&words);
+            print_line("the daemon is running: nothing was started");
+            ExitCode::from(EXIT_OK)
+        }
+        daemon_cli::Launched::Absent(words) => {
+            print_line(&words);
+            print_line("the daemon is not running: start it from the menu");
+            ExitCode::from(EXIT_UNREACHABLE)
+        }
+        daemon_cli::Launched::Started(outcome) => {
+            if outcome.done() {
+                print_line(outcome.words());
+                print_line("the daemon was started");
+            } else {
+                eprintln!("{}", outcome.words());
+            }
+            ExitCode::from(outcome.exit_code())
+        }
+    }
+}
+
+/// The quit path, without a dialog.
+///
+/// The flags are the dialog's answer: `--stop` checks `Also stop whirl`, `--keep`
+/// leaves it unchecked, and `--dont-ask` ticks the box that remembers. With an
+/// answer already remembered the flags are ignored, exactly as the app ignores a
+/// dialog it does not show.
+#[cfg(target_os = "macos")]
+fn quit_command(args: &[String]) -> ExitCode {
+    let mut checked: Option<daemon_cli::QuitAnswer> = None;
+    let mut remember = false;
+    for argument in args {
+        let answer = match argument.as_str() {
+            "--stop" => daemon_cli::QuitAnswer::StopWhirl,
+            "--keep" => daemon_cli::QuitAnswer::KeepRunning,
+            "--dont-ask" => {
+                remember = true;
+                continue;
+            }
+            _ => return usage(QUIT_FLAGS),
+        };
+        if checked.replace(answer).is_some() {
+            return usage(QUIT_FLAGS);
+        }
+    }
+
+    let remembered = prefs::quit_answer();
+    // With no remembered answer the question would be asked. A terminal has no
+    // dialog, so the answer has to be on the command line.
+    let Some(answer) = checked.or_else(|| {
+        remembered.map(|stop| {
+            if stop {
+                daemon_cli::QuitAnswer::StopWhirl
+            } else {
+                daemon_cli::QuitAnswer::KeepRunning
+            }
+        })
+    }) else {
+        return usage(QUIT_FLAGS);
+    };
+
+    let plan = daemon_cli::quit_plan(remembered, answer, remember);
+    match daemon_cli::finish_quit(plan) {
+        Some(outcome) => {
+            if outcome.done() {
+                print_line(outcome.words());
+            } else {
+                eprintln!("{}", outcome.words());
+            }
+            ExitCode::from(outcome.exit_code())
+        }
+        None => {
+            print_line("the daemon keeps running");
+            ExitCode::from(EXIT_OK)
+        }
+    }
+}
+
+/// The `--quit` flags, as the usage line spells them.
+#[cfg(target_os = "macos")]
+const QUIT_FLAGS: &str =
+    "--quit takes --stop or --keep, and optionally --dont-ask, when no answer is remembered";
+
+/// The remembered quit answer, or `ask` when the question is still asked.
+#[cfg(target_os = "macos")]
+fn quit_answer_command() -> ExitCode {
+    print_line(&format!(
+        "quit: {}",
+        prefs::quit_answer_word(prefs::quit_answer())
+    ));
+    ExitCode::from(EXIT_OK)
+}
 
 /// A command line a mode cannot work, with the reason and the usage.
 fn usage(message: &str) -> ExitCode {

@@ -14,8 +14,11 @@ Wallpaper that rotates on a schedule, from folders you choose, from the menu bar
 Whirl puts the [whirl](https://github.com/guruor/whirl) wallpaper daemon on the menu bar. The daemon is
 headless: it owns the wallpaper, the rotation, the sources and every piece of state, and this app is an
 ordinary client of it, which owns none of that. The app writes no state file, calls no platform setter,
-and never starts, stops or restarts the daemon; it holds no copy of the configuration it did not read
-back through the protocol. Its whole obligation to the daemon is whirl's
+and holds no copy of the configuration it did not read back through the protocol. Its one part in the
+daemon's lifecycle is the daemon's own command: when the daemon is not answering the app offers a
+`Start whirl` control, and pressing it runs `whirl daemon start`, which asks the OS supervisor for the
+job the supervisor already owns. The app never writes a unit file, never unlinks a socket and never
+kills a process. Its whole obligation to the daemon is whirl's
 [`docs/architecture.md` section
 8](https://github.com/guruor/whirl/blob/main/docs/architecture.md#8-frontend-contract), "Frontend
 contract", which lists what a frontend may rely on and what it must never do.

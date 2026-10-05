@@ -37,8 +37,8 @@ use crate::about;
 use crate::settings::{
     self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE,
     COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES,
-    PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, SUBTITLE,
-    Settings, SystemPanel, Unit, WINDOW_TITLE,
+    PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, START_LABEL,
+    START_LINE, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
 };
 use crate::theme;
 
@@ -748,13 +748,19 @@ fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
 /// pane and `--dump-settings` say the same thing; the reference's disconnected
 /// state is what that sentence looks like when the socket did not answer, and it
 /// is drawn as an error card rather than a status light.
-fn app_pane(ui: &mut egui::Ui, settings: &Settings) {
+fn app_pane(ui: &mut egui::Ui, settings: &mut Settings) {
     let connected = matches!(settings.daemon, Daemon::Running);
     let outline = if connected {
         theme::HAIRLINE
     } else {
         theme::STATE_BAD
     };
+    // Read before the body draws, so the click below is the only thing that
+    // changes the control's answer.
+    let daemon_line = settings.daemon.line();
+    let version = settings.running_version();
+    let action = settings.daemon_action.clone();
+    let mut pressed = false;
     surface(ui, outline, |ui| {
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -779,16 +785,35 @@ fn app_pane(ui: &mut egui::Ui, settings: &Settings) {
         });
         ui.add_space(theme::SPACE_SM);
         if !connected {
-            banner(ui, settings.daemon.line().as_str(), theme::STATE_BAD);
+            banner(ui, daemon_line.as_str(), theme::STATE_BAD);
+            ui.add_space(theme::SPACE_SM);
+            // The same control as the menu's `Start whirl` row, beside the line
+            // that says the daemon is not running: a window that reads as broken
+            // with no way forward is the defect this answers. Its answer is the
+            // daemon's own words, kept under it until the daemon answers again.
+            pressed = primary_button(ui, START_LABEL).clicked();
+            ui.add_space(theme::SPACE_XS);
+            caption(ui, START_LINE);
+            if let Some(line) = &action {
+                ui.add_space(theme::SPACE_XS);
+                note(ui, line);
+            }
             ui.add_space(theme::SPACE_SM);
         } else {
-            note(ui, settings.daemon.line().as_str());
+            note(ui, daemon_line.as_str());
             ui.add_space(theme::SPACE_SM);
         }
         caption(ui, APP_DAEMON_NOTE);
         ui.add_space(theme::SPACE_XS);
-        caption(ui, &format!("version v{}", settings.running_version()));
+        caption(ui, &format!("version v{version}"));
     });
+    if pressed {
+        // The app's one route to the daemon's lifecycle: the daemon's own
+        // command. It is a synchronous click, which is the price of one process
+        // start, and nothing here spawns a daemon or writes a unit.
+        let outcome = crate::daemon_cli::run(crate::daemon_cli::Verb::Start);
+        settings.daemon_action = Some(outcome.words().to_string());
+    }
 }
 
 /// The About pane: what this app is, which build is running, where its source

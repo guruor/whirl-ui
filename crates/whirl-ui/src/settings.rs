@@ -131,11 +131,28 @@ pub const COLLECTION_TOKEN_NOTE: &str = "a public collection needs no key; a pri
 pub const APP_DAEMON_NOTE: &str =
     "changes are written to the config file; whirl picks them up the next time it reads it";
 
+/// The window's own control for a daemon that is not answering, beside the
+/// daemon line in the App pane. The same request as the menu's `Start whirl`
+/// row: it is a control, not an interruption.
+pub const START_LABEL: &str = "Start whirl";
+
+/// What the control does, in the app's own words.
+///
+/// The route is worth one sentence because it is the whole of the permission the
+/// daemon's contract gives the app: the app asks the daemon's own command, and
+/// that command asks the OS supervisor. No process of the app's own is started,
+/// and a daemon that refuses is shown rather than worked around.
+pub const START_LINE: &str = "asks the daemon's own command, `whirl daemon start`, to start it through the OS supervisor; the app starts no process of its own";
+
 /// The About section's heading.
 pub const ABOUT_TITLE: &str = "About";
 
 /// What this app is, in the product's own words.
-pub const ABOUT_LINE: &str = "whirl-ui is a lightweight tray frontend for the whirl wallpaper daemon: it reads the daemon's status and edits the config file, and it never starts the daemon";
+///
+/// The last clause is the amended frontend contract: the app never spawns a
+/// daemon of its own, and the one way it takes part in the daemon's lifecycle is
+/// by asking the daemon's own command, which asks the OS supervisor.
+pub const ABOUT_LINE: &str = "whirl-ui is a lightweight tray frontend for the whirl wallpaper daemon: it reads the daemon's status and edits the config file, and it takes part in the daemon's lifecycle only by asking the daemon's own command, never by spawning a daemon of its own";
 
 /// The heading over the release check.
 pub const CHECK_TITLE: &str = "Is there a newer one?";
@@ -176,6 +193,10 @@ pub struct Settings {
     pub bundle_version: Option<String>,
     /// The daemon's own version, when it answered the `version` request.
     pub daemon_version: Option<String>,
+    /// The daemon's own words about the last `Start whirl` this window asked
+    /// for, kept so the pane can show a refusal beside the line it belongs to.
+    /// `None` until the control is pressed.
+    pub daemon_action: Option<String>,
     /// The last release check, and what it found. `None` until the button is
     /// pressed: the app never checks on its own.
     pub check: Option<about::Check>,
@@ -741,6 +762,7 @@ impl Settings {
             // The window opens with no check made: it is the button's job, and
             // nothing here reaches the network.
             check: None,
+            daemon_action: None,
             sources: Sources {
                 rows,
                 problem,

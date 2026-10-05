@@ -29,8 +29,15 @@ pub enum RowId {
     /// `resume`, and the row's label while the schedule is suspended.
     Resume,
     Favourite,
+    /// Ask the daemon's own command to start it, shown only when the daemon is
+    /// not answering. Not a daemon protocol verb: it is `whirl daemon start`,
+    /// which a frontend may ask for and never performs itself.
+    StartDaemon,
     Settings,
     Quit,
+    /// A line the app is reporting (the daemon command's own answer). A line,
+    /// not a control.
+    Report,
 }
 
 /// Resolving a click is the tray's job, and the tray is macOS-only for now, so
@@ -41,15 +48,17 @@ pub enum RowId {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl RowId {
     /// Every row, in the order they appear on screen.
-    pub const ALL: [RowId; 8] = [
+    pub const ALL: [RowId; 10] = [
         RowId::Now,
         RowId::Next,
         RowId::Previous,
         RowId::Pause,
         RowId::Resume,
         RowId::Favourite,
+        RowId::StartDaemon,
         RowId::Settings,
         RowId::Quit,
+        RowId::Report,
     ];
 
     /// The name the menu item carries.
@@ -61,8 +70,10 @@ impl RowId {
             RowId::Pause => "pause",
             RowId::Resume => "resume",
             RowId::Favourite => "favourite",
+            RowId::StartDaemon => "start-daemon",
             RowId::Settings => "settings",
             RowId::Quit => "quit",
+            RowId::Report => "report",
         }
     }
 
@@ -71,16 +82,17 @@ impl RowId {
         RowId::ALL.into_iter().find(|row| row.key() == key)
     }
 
-    /// What a click on this row asks for, or `None` for the row that is a line
-    /// rather than a control.
+    /// What a click on this row asks for, or `None` for the rows that are lines
+    /// rather than controls.
     pub fn action(self) -> Option<Action> {
         match self {
-            RowId::Now => None,
+            RowId::Now | RowId::Report => None,
             RowId::Next => Some(Action::Next),
             RowId::Previous => Some(Action::Previous),
             RowId::Pause => Some(Action::Pause),
             RowId::Resume => Some(Action::Resume),
             RowId::Favourite => Some(Action::Favourite),
+            RowId::StartDaemon => Some(Action::StartDaemon),
             RowId::Settings => Some(Action::Settings),
             RowId::Quit => Some(Action::Quit),
         }
@@ -91,6 +103,8 @@ impl RowId {
 ///
 /// Five of these are whirl's own verbs (2.5.1) and go to the daemon through
 /// `whirlui-client`; two are the app's own business and never reach the socket.
+/// `StartDaemon` is a third kind: it is the daemon's own command rather than a
+/// protocol verb, and it asks the OS supervisor rather than spawning anything.
 /// Only the tray builds one, so on the non-macOS legs it is the tests that do.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +114,8 @@ pub enum Action {
     Pause,
     Resume,
     Favourite,
+    /// Ask `whirl daemon start` to start the daemon, through the supervisor.
+    StartDaemon,
     /// Show the settings window: the real one, `app`'s, from the `Settings…` row.
     /// Every control is disabled and every pane says so.
     Settings,
@@ -168,31 +184,51 @@ impl Row {
 
 /// The rows for the state the app is holding, in menu order.
 ///
-/// Two rules are worth stating because they are decisions rather than
+/// Three rules are worth stating because they are decisions rather than
 /// descriptions. `Favourite` disappears while `favorites_degraded` is set: the
 /// daemon cannot honour a pin, and section 8 item 5 says to hide the affordance
-/// rather than to offer one that fails. And a row that needs the daemon is
-/// disabled exactly when there is no daemon, while `Settings…` and `Quit` stay
-/// live because neither is a daemon verb and an app with no way to quit is a
-/// bug, not a state.
+/// rather than to offer one that fails. `Start whirl` appears exactly when the
+/// daemon is not answering, and it is a control rather than an interruption: the
+/// app offers the daemon's own command instead of a window that reads as broken
+/// with no way forward. And a row that needs the daemon is disabled exactly when
+/// there is no daemon, while `Settings…` and `Quit` stay live because neither is
+/// a daemon verb and an app with no way to quit is a bug, not a state.
 pub fn rows(view: &View) -> Vec<Row> {
     let reachable = view.reachable();
-    let mut rows = vec![
-        Row::item(RowId::Now, view.image_line(), false),
-        Row::item(RowId::Next, "Next", reachable),
-        Row::item(RowId::Previous, "Previous", reachable),
-        if view.paused() {
-            Row::item(RowId::Resume, "Resume", reachable)
-        } else {
-            Row::item(RowId::Pause, "Pause", reachable)
-        },
-    ];
+    let mut rows = vec![Row::item(RowId::Now, view.image_line(), false)];
+    if !reachable {
+        // The offer sits directly under the line that says the daemon is not
+        // running, so the sentence and the way forward are read together.
+        rows.push(Row::item(RowId::StartDaemon, "Start whirl", true));
+    }
+    rows.push(Row::item(RowId::Next, "Next", reachable));
+    rows.push(Row::item(RowId::Previous, "Previous", reachable));
+    rows.push(if view.paused() {
+        Row::item(RowId::Resume, "Resume", reachable)
+    } else {
+        Row::item(RowId::Pause, "Pause", reachable)
+    });
     if !view.favourites_degraded() {
         rows.push(Row::item(RowId::Favourite, "Favourite", reachable));
     }
     rows.push(Row::separator());
     rows.push(Row::item(RowId::Settings, "Settings…", true));
     rows.push(Row::item(RowId::Quit, "Quit", true));
+    rows
+}
+
+/// The same rows, with one line the app is reporting added under the image line.
+///
+/// The line is the daemon command's own answer (a start that refused, a start
+/// that was done), which is the app's own report and not a row of the daemon's
+/// menu: `--menu-dump` prints the rows without it, and the tray draws it only
+/// when there is something to say.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS tray, which is the only caller.
+pub fn rows_reporting(view: &View, report: Option<&str>) -> Vec<Row> {
+    let mut rows = rows(view);
+    if let Some(text) = report {
+        rows.insert(1, Row::item(RowId::Report, text, false));
+    }
     rows
 }
 
@@ -307,12 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn no_daemon_disables_the_rows_that_need_one() {
+    fn no_daemon_disables_the_rows_that_need_one_and_offers_to_start_it() {
         let view = View::offline();
         assert_eq!(
             shape(&view),
             vec![
                 (Some(RowId::Now), false),
+                (Some(RowId::StartDaemon), true),
                 (Some(RowId::Next), false),
                 (Some(RowId::Previous), false),
                 (Some(RowId::Pause), false),
@@ -326,6 +363,7 @@ mod tests {
             lines(&view),
             vec![
                 "the daemon is not running",
+                "Start whirl",
                 "Next (disabled)",
                 "Previous (disabled)",
                 "Pause (disabled)",
@@ -335,6 +373,35 @@ mod tests {
                 "Quit",
             ]
         );
+    }
+
+    #[test]
+    fn a_reachable_daemon_is_offered_no_start_row() {
+        // The offer is for a daemon that is not answering: when it answers there
+        // is nothing to start and no row to start it with.
+        for view in [
+            status(false, true, false, "pictures:8d9600e8"),
+            status(true, false, false, "pictures:8d9600e8"),
+        ] {
+            let ids: Vec<Option<RowId>> = rows(&view).iter().map(|row| row.id).collect();
+            assert!(!ids.contains(&Some(RowId::StartDaemon)), "{ids:?}");
+        }
+    }
+
+    #[test]
+    fn the_apps_own_report_is_a_line_under_the_image_line() {
+        let view = View::offline();
+        let reporting = rows_reporting(&view, Some("whirl: no unit at /x"));
+        assert_eq!(reporting[1].id, Some(RowId::Report));
+        assert_eq!(reporting[1].label, "whirl: no unit at /x");
+        assert!(!reporting[1].is_control(), "the report is a line");
+        assert_eq!(
+            reporting[1].line(),
+            "whirl: no unit at /x",
+            "a line is never marked disabled"
+        );
+        // With nothing to report the rows are the menu's own.
+        assert_eq!(rows_reporting(&view, None), rows(&view));
     }
 
     #[test]
@@ -368,9 +435,14 @@ mod tests {
     }
 
     #[test]
-    fn the_line_row_is_the_only_one_with_no_action() {
+    fn the_two_line_rows_are_the_only_ones_with_no_action() {
         for id in RowId::ALL {
-            assert_eq!(id.action().is_none(), id == RowId::Now, "{}", id.key());
+            assert_eq!(
+                id.action().is_none(),
+                matches!(id, RowId::Now | RowId::Report),
+                "{}",
+                id.key()
+            );
         }
     }
 

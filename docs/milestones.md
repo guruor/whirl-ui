@@ -50,7 +50,9 @@ M2 turns the settings window from a report into a writer. The write surface is t
 the writer's contract in whirl's
 [`docs/decisions/0002-frontends-write-config-own-no-daemon.md`](https://github.com/guruor/whirl/blob/main/docs/decisions/0002-frontends-write-config-own-no-daemon.md):
 the frontend writes the file the daemon reads, and owns no part of the daemon. It still never calls a
-platform setter, never touches a state file, and never starts or stops the daemon.
+platform setter, never touches a state file, and starts no daemon: its one part in the daemon's
+lifecycle is the daemon's own command, `whirl daemon start|stop|status`, which asks the OS supervisor
+for the job the supervisor owns (whirl's `docs/architecture.md` section 8, "may rely on" 8).
 
 | # | criterion | proof |
 |---|---|---|
@@ -66,7 +68,7 @@ gets a supervisor unit from whirl's own installation, not from this app.
 | # | criterion | proof |
 |---|---|---|
 | 1 | The app installs and removes its own login item. | The app's own mode does both: `whirl-ui --login-item register` then `whirl-ui --login-item status` prints `login item: enabled (status 1)`, and `sfltool dumpbtm` lists one row for the app (`Name: Whirl`, `Identifier: 2.com.guruor.whirl-ui`, `URL: file:///Applications/Whirl.app/`); `whirl-ui --login-item unregister` prints `login item: not registered (status 0)` and the Login Items pane no longer lists Whirl (the operator's own visual check). The bundle is what macOS registers and the status is read from the app's own `SMAppService.mainApp.status`, so the mode refuses from a bare binary and names the path it looked at rather than registering the directory it sits in. `sfltool dumpbtm` runs without root (exit 0, measured 2026-10-04). Two limits belong in the criterion rather than behind it, because a proof nobody can produce is worse than none: `unregister` leaves the app's row in the BTM database as `Disposition: [disabled, allowed, notified]` (the API has no delete, and the row survives the bundle being moved away), and no part of this is a launchd service, so `launchctl print gui/$(id -u)/<label>` exits 113 for every label (measured on macOS 26.7) and proves nothing either way. Artifact: the two status lines, the two `dumpbtm` rows, and the Login Items pane. |
-| 2 | The app does not own the daemon's lifetime. | `grep -rn 'LaunchAgents' crates/whirl-ui/src` names no write to `~/Library/LaunchAgents`, and `pgrep -x whirld` reports the same single daemon before launch and after quit with the login item enabled (section 8 item 3). Artifact: the grep and the `pgrep` output. |
+| 2 | The app does not own the daemon's lifetime. | `grep -rn 'LaunchAgents' crates/whirl-ui/src` names no write to `~/Library/LaunchAgents`, and the app's only call to a daemon command is `Command::new` for `whirl` in `crates/whirl-ui/src/daemon_cli.rs` (its other spawns are `curl` for the About pane's release check and `/usr/bin/security` for the platform store, and neither is the daemon), so the app starts no process of the daemon's kind: the supervisor starts one when the app asks the supervisor's own command to (section 8, "may rely on" 8). A quit with "Also stop whirl" unchecked changes nothing: `pgrep -x whirld` names the same process before and after it. Artifact: the greps, the log the stand-in `whirl` records, and the `pgrep` output. |
 | 3 | The daemon's unit is whirl's, not the app's. | Once whirl's installation ships the unit, `launchctl print gui/$(id -u)/com.guruor.whirl` exits 0 whether or not the app is installed, and the unit file is the one whirl's installer wrote. Artifact: the command's output and the unit file's path. |
 
 ## M4: Windows and Linux
