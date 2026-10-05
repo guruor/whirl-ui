@@ -9,9 +9,12 @@
 //! state file, calls no platform setter, and spawns no daemon of its own. The
 //! daemon is started, stopped or asked about only through the daemon's own
 //! command, in [`crate::daemon_cli`]: the OS supervisor owns the job, and this
-//! app asks it rather than starting a second daemon. It also never polls: one
-//! subscription is the only source of change, and the two threads below block on
-//! it and on a channel.
+//! app asks it rather than starting a second daemon. It never polls the daemon:
+//! one subscription is the only source of change, and the threads below block on
+//! it and on a channel. The one thing looked at on a timer is the socket file
+//! itself, with a `stat` (`watch`): a `stat` opens nothing and asks the daemon
+//! nothing, and it is how a daemon that goes away while a read is blocked is
+//! noticed rather than waited out.
 //!
 //! The app is an agent, and only while its window is shut. It is built with the
 //! accessory activation policy and the bundle says `LSUIElement`, so it takes no
@@ -23,13 +26,15 @@
 //! [`App::state_window`], and a `Settings…` click with the window already up
 //! raises the window it has instead of activating the process ([`App::logic`]).
 //!
-//! The shape is three pieces:
+//! The shape is four pieces:
 //!
 //! - the event thread sets the view (a `status` snapshot, then the deltas the
 //!   events carry) and asks for a repaint;
 //! - the command thread performs the five rows that are whirl's own verbs, on
 //!   its own connection, so a rotation that blocks for seconds never blocks the
-//!   menu;
+//!   menu, and a verb that changes the daemon's state ends by reading it again;
+//! - the socket watch takes the view offline when the socket file goes, which is
+//!   the one change the subscription cannot report while a read is blocked;
 //! - the UI thread draws the rows and owns the tray icon, which must be created
 //!   once the event loop is running (`tray-icon`'s own macOS requirement).
 //!
@@ -41,6 +46,7 @@
 //! tooltip and an accessible name (`ITEM_NAME`), and neither of those changes
 //! the item's width.
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -51,7 +57,7 @@ use eframe::egui;
 use tray_icon::TrayIcon;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 
-use whirlui_client::{Client, ClientError, Event, Subscription, Update};
+use whirlui_client::{Client, ClientError, Event, Status, Subscription, Update};
 
 use crate::app;
 use crate::daemon_cli::{self, Verb};
@@ -86,8 +92,8 @@ struct Requests {
 /// The state the tray draws, shared by the two worker threads and the UI.
 ///
 /// One mutex per value: every thread reads the view, writes the view, or asks the
-/// UI to draw. Nothing here waits on anything but the subscription and the
-/// command channel, so no thread polls.
+/// UI to draw. Nothing here waits on a timer but the socket watch's `stat`, which
+/// asks the daemon nothing.
 #[derive(Debug)]
 struct Shared {
     view: Mutex<View>,
@@ -198,6 +204,21 @@ impl Shared {
         eprintln!("whirl-ui: {error}");
     }
 
+    /// Draw the daemon's state after a verb that changed it.
+    ///
+    /// The read is the caller's, `connection.status()` on whichever connection
+    /// performed the verb, and this is what to do with its answer: a state the
+    /// daemon reported replaces the view, a daemon that is not there takes it
+    /// offline, and a refusal leaves the view as it is (2.7: "the daemon said
+    /// no" is not a state).
+    fn reread(&self, read: Result<Status, ClientError>) {
+        match read {
+            Ok(status) => self.replace(View::live(status)),
+            Err(error) if error.unreachable() => self.unreachable(&error),
+            Err(error) => self.refused(&error),
+        }
+    }
+
     /// Leave these panes for the pass that opens the settings window.
     ///
     /// The read happens on the command thread and showing a viewport is the UI
@@ -289,6 +310,41 @@ fn events(shared: Arc<Shared>) {
     }
 }
 
+/// How often the socket file is looked at.
+///
+/// The subscription is what reports a change *inside* the daemon. This is the one
+/// outside it: a daemon that goes away while the subscription's read is blocked,
+/// which the read only reports once its liveness window runs out. A quarter of a
+/// second keeps that well inside the one second the app is judged by, and a `stat`
+/// four times a second costs nothing.
+const WATCH: Duration = Duration::from_millis(250);
+
+/// Look at the socket file once, and take the view offline when it is gone.
+///
+/// A `stat` and nothing else: the socket is never opened and no protocol read is
+/// involved, so the view follows the file the moment it goes rather than when a
+/// blocked read would have timed out. `true` when the file was already gone.
+fn notice_socket_gone(shared: &Shared, socket: &Path) -> bool {
+    if socket.exists() {
+        return false;
+    }
+    shared.offline();
+    true
+}
+
+/// Follow the socket file, and take the view offline when it goes.
+///
+/// The one observation of the daemon's life this app makes outside the protocol,
+/// and it is an observation: a `stat` on the path the client's own resolution
+/// names ([`whirlui_client::socket_path`]). It opens nothing, asks nothing and
+/// changes nothing about the daemon, which is why a `stat` is enough.
+fn watch(shared: Arc<Shared>, socket: PathBuf) {
+    loop {
+        thread::sleep(WATCH);
+        notice_socket_gone(&shared, &socket);
+    }
+}
+
 /// Perform the five rows that are whirl's own verbs, one at a time, on a
 /// connection of its own, and read the panes the `Settings…` row opens the window
 /// on.
@@ -313,10 +369,10 @@ fn commands(rx: Receiver<Action>, shared: Arc<Shared>) {
             continue;
         }
         // `Start whirl` is the daemon's own lifecycle command rather than a
-        // protocol verb, so it never opens a socket and never reaches `perform`.
-        // This is the app's one place that asks the daemon to start, and the
-        // request is the daemon's own words: a refusal is kept for the menu
-        // exactly as a start that was done is.
+        // protocol verb, so it never reaches `perform`. This is the app's one
+        // place that asks the daemon to start, and the request is the daemon's
+        // own words: a refusal is kept for the menu exactly as a start that was
+        // done is.
         if action == Action::StartDaemon {
             let outcome = daemon_cli::run(Verb::Start);
             eprintln!(
@@ -325,6 +381,12 @@ fn commands(rx: Receiver<Action>, shared: Arc<Shared>) {
                 outcome.words()
             );
             shared.set_report(Some(outcome.words().to_string()));
+            // The step changed the daemon's state, so it ends by reading that
+            // state rather than assuming it from the supervisor's answer: the
+            // mark and the line follow the daemon that answers now. Nothing is
+            // connected at this point (the row is offered exactly while no
+            // daemon answers), so the read opens a connection of its own.
+            read_state(&shared);
             continue;
         }
         let mut connection = match client.take() {
@@ -340,7 +402,16 @@ fn commands(rx: Receiver<Action>, shared: Arc<Shared>) {
             },
         };
         match perform(&mut connection, action) {
-            Ok(()) => client = Some(connection),
+            Ok(()) => {
+                // A verb that changed the daemon's state ends by reading that
+                // state rather than leaving the app to wait for the event
+                // stream to say so. A pause is the case this app got wrong: the
+                // mark and the line kept saying the daemon was running until
+                // something else happened, and they must show the pause with no
+                // further click.
+                after_verb(&shared, action, || connection.status());
+                client = Some(connection);
+            }
             Err(error) => {
                 shared.refused(&error);
                 if error.refusal().and_then(|refusal| refusal.action())
@@ -349,10 +420,7 @@ fn commands(rx: Receiver<Action>, shared: Arc<Shared>) {
                     // Section 8 item 5: `not_found` means the id this app holds
                     // is stale, so read the state again rather than keep
                     // drawing from it.
-                    match connection.status() {
-                        Ok(status) => shared.replace(View::live(status)),
-                        Err(error) => shared.refused(&error),
-                    }
+                    shared.reread(connection.status());
                     client = Some(connection);
                 } else if error.unreachable() {
                     shared.unreachable(&error);
@@ -383,6 +451,45 @@ fn perform(client: &mut Client, action: Action) -> Result<(), ClientError> {
     }
 }
 
+/// Whether a verb this app performed leaves the view stale, so the daemon's state
+/// must be read again rather than assumed.
+///
+/// `pause` and `resume` change the one key the tray draws beside the mark, and
+/// the app may not wait for the event stream to carry it: the defect was a pause
+/// that never reached the view, so the mark and the line kept saying the daemon
+/// was running. `next`, `previous` and `favourite` are not here: their outcome is
+/// an image or a pin, which arrives with its own event, and `next` already blocks
+/// until the daemon has an outcome (2.8).
+fn rereads(action: Action) -> bool {
+    matches!(action, Action::Pause | Action::Resume)
+}
+
+/// End a verb that changed the daemon's state by reading that state, and draw
+/// what the read says.
+///
+/// `read` is the caller's, so the read happens on the connection that performed
+/// the verb; a verb that changed nothing runs no read at all. It is a value here
+/// (a closure the caller supplies) rather than a call inside [`commands`],
+/// because that is what a test can drive without a daemon.
+fn after_verb(shared: &Shared, action: Action, read: impl FnOnce() -> Result<Status, ClientError>) {
+    if rereads(action) {
+        shared.reread(read());
+    }
+}
+
+/// Read the daemon's state on a connection of its own, and draw it.
+///
+/// The lifecycle steps have no connection open when they run — a start is only
+/// offered while nothing answers, and a stop is the daemon leaving — so this is
+/// how they end with a read of the state, on the same route the refusal path
+/// takes, rather than an assumption about it.
+fn read_state(shared: &Shared) {
+    match Client::connect() {
+        Ok(mut connection) => shared.reread(connection.status()),
+        Err(error) => shared.unreachable(&error),
+    }
+}
+
 /// Run the menu bar item until the user quits it.
 pub fn run() -> ExitCode {
     let (tx, rx) = mpsc::channel::<Action>();
@@ -390,6 +497,15 @@ pub fn run() -> ExitCode {
     let (event_shared, command_shared) = (Arc::clone(&shared), Arc::clone(&shared));
     spawn("whirl-ui-events", move || events(event_shared));
     spawn("whirl-ui-commands", move || commands(rx, command_shared));
+    // The socket the client itself uses, watched with a `stat` so a daemon that
+    // goes away out of band is noticed without a click and without waiting for a
+    // blocked read to time out. A path that cannot be resolved here has nothing
+    // to watch; a daemon that never answered at all is the subscription's own
+    // report.
+    if let Ok(socket) = whirlui_client::socket_path() {
+        let watch_shared = Arc::clone(&shared);
+        spawn("whirl-ui-watch", move || watch(watch_shared, socket));
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -864,8 +980,15 @@ impl eframe::App for App {
     /// what makes a `Settings…` click work on a hidden window: the click requests
     /// a repaint, this runs, and the viewport is shown from here.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let view = self.shared.view();
+        // The settings window's own status line follows the same view as the
+        // mark. The window is opened on a snapshot of the daemon's state and
+        // nothing re-reads it, so a daemon that answers or goes away after that
+        // would otherwise leave the line saying the opposite until it was
+        // reopened.
+        self.dialog.set_daemon(&view);
         let report = self.shared.report();
-        let rows = menu::rows_reporting(&self.shared.view(), report.as_deref());
+        let rows = menu::rows_reporting(&view, report.as_deref());
         if rows != self.rendered {
             if let Some(tray) = self.tray.as_ref() {
                 tray.set_menu(Some(Box::new(build_menu(&rows))));
@@ -876,7 +999,7 @@ impl eframe::App for App {
         // The picture, for the same reason and on the same pass as the rows: a
         // `Paused` event or a daemon going out of reach changes both, and the
         // mark is what makes the state readable with the menu shut.
-        let mark = icon::Mark::of(&self.shared.view());
+        let mark = icon::Mark::of(&view);
         if mark != self.mark {
             if let Some(tray) = self.tray.as_ref()
                 && let Err(error) = set_mark(tray, mark)
@@ -933,13 +1056,18 @@ impl eframe::App for App {
                 QuitChoice::Quit { stop, remember } => (stop, remember),
             };
             let plan = daemon_cli::quit_plan(remembered, answer_of(stop), remember);
-            if let Some(outcome) = daemon_cli::finish_quit(plan)
-                && !outcome.done()
-            {
-                // The daemon refused to stop, and its own words are what says
-                // so. The app still goes: the quit was the person's, and the
-                // answer is reported rather than obeyed.
-                report_alert("whirl could not be stopped", outcome.words());
+            if let Some(outcome) = daemon_cli::finish_quit(plan) {
+                // The stop changed the daemon's state, so the app's last act is
+                // to read that state rather than assume it: the state the quit
+                // leaves is the one the stop left, and its line is the last
+                // line about the daemon before the app goes.
+                read_state(&self.shared);
+                if !outcome.done() {
+                    // The daemon refused to stop, and its own words are what
+                    // says so. The app still goes: the quit was the person's,
+                    // and the answer is reported rather than obeyed.
+                    report_alert("whirl could not be stopped", outcome.words());
+                }
             }
             self.dialog.quit();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1145,5 +1273,152 @@ mod tests {
         assert_eq!(visibility(false, Some(false)), None);
         // A dialog that closed takes the window off the screen again.
         assert_eq!(visibility(false, Some(true)), Some(false));
+    }
+
+    /// A daemon snapshot with the pause flag this test needs, in 2.10's shape.
+    fn snapshot(paused: bool) -> whirlui_client::Status {
+        let mut lines: Vec<String> = [
+            "daemon_version: whirl 0.1.0",
+            "protocol: 2",
+            "platform: macos",
+            "seq: 7",
+            "favorites_degraded: 0",
+            "last_digest: d43584",
+            "last_origin_key: pictures:8d9600e8",
+            "source: pictures local weight=1 enabled=1 last=- reason=-",
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+        lines.insert(4, format!("paused: {}", u8::from(paused)));
+        whirlui_client::Status::from_lines(&lines)
+    }
+
+    #[test]
+    fn only_the_verbs_that_change_the_state_are_read_again() {
+        // The rule is a read after every verb that changed the daemon's state.
+        // `pause` and `resume` change the one key the tray draws beside the
+        // mark, and they are the defect: the app used to keep drawing the
+        // connected line until something else happened. The rest are not read
+        // again here: `next` and `previous` carry their new image with an event
+        // of their own, `favourite` carries its own, and the three rows that are
+        // not daemon verbs have no state to read.
+        assert!(rereads(Action::Pause));
+        assert!(rereads(Action::Resume));
+        for action in [
+            Action::Next,
+            Action::Previous,
+            Action::Favourite,
+            Action::StartDaemon,
+            Action::Settings,
+            Action::Quit,
+        ] {
+            assert!(!rereads(action), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn a_pause_that_succeeded_reads_the_state_again_and_draws_it() {
+        // The shape of what the command thread does after a `pause` that
+        // returned `Ok`: it reads the state, on the connection that performed
+        // the verb, and draws the answer. The read is a value here, so the test
+        // can say whether it ran at all and with what.
+        let shared = Shared::new();
+        shared.replace(View::live(snapshot(false)));
+        assert_eq!(icon::Mark::of(&shared.view()), icon::Mark::Running);
+        assert!(!shared.view().paused());
+
+        let mut read = false;
+        after_verb(&shared, Action::Pause, || {
+            read = true;
+            Ok(snapshot(true))
+        });
+
+        assert!(read, "a pause reads the state again");
+        assert!(shared.view().paused(), "and draws what it read");
+        assert_eq!(icon::Mark::of(&shared.view()), icon::Mark::Paused);
+    }
+
+    #[test]
+    fn a_verb_that_changed_nothing_reads_nothing() {
+        // The other half of the rule: `next` and `previous` carry their new
+        // image with an event of their own, so reading the state after one would
+        // be a round trip for a fact the app is already being told. The closure
+        // panics, so a read here is a failure rather than a wasted call.
+        let shared = Shared::new();
+        shared.replace(View::live(snapshot(false)));
+        for action in [Action::Next, Action::Previous, Action::Favourite] {
+            after_verb(&shared, action, || panic!("{action:?} read the state"));
+        }
+        assert_eq!(shared.view(), View::live(snapshot(false)));
+    }
+
+    #[test]
+    fn a_socket_file_that_goes_takes_the_view_offline_without_a_read() {
+        // The watch is a `stat` of the socket file and nothing else: no socket
+        // is opened and no protocol read is involved, so a daemon that goes away
+        // is noticed when its file goes rather than when a blocked read would
+        // have timed out. A plain file stands in for the socket here, because
+        // the only thing looked at is whether it is there.
+        let dir = std::env::temp_dir().join(format!("whirl-ui-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let socket = dir.join("w.sock");
+        std::fs::write(&socket, b"").expect("a stand-in socket file");
+
+        let shared = Shared::new();
+        shared.replace(View::live(snapshot(false)));
+        assert!(!notice_socket_gone(&shared, &socket), "the file was there");
+        assert!(shared.view().reachable(), "nothing changed while it was");
+
+        std::fs::remove_file(&socket).expect("the file goes");
+        assert!(notice_socket_gone(&shared, &socket), "the file had gone");
+
+        assert!(!shared.view().reachable(), "the view follows the file");
+        assert_eq!(icon::Mark::of(&shared.view()), icon::Mark::Unreachable);
+        assert_eq!(shared.view().image_line(), "the daemon is not running");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_watch_thread_takes_the_view_offline_when_the_socket_file_goes() {
+        // The whole watch rather than one look at it: a real socket file, the
+        // thread `run` starts, and the view it flips. The file is bound as a
+        // real unix socket so this is the same kind of file the client's own
+        // path names, and the watch still only looks at whether it is there.
+        let dir =
+            std::env::temp_dir().join(format!("whirl-ui-watch-thread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let socket = dir.join("w.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket file");
+
+        let shared = Arc::new(Shared::new());
+        shared.replace(View::live(snapshot(false)));
+        let watched = Arc::clone(&shared);
+        let path = socket.clone();
+        let thread = thread::Builder::new()
+            .name("whirl-ui-watch-test".to_string())
+            .spawn(move || watch(watched, path))
+            .expect("the watch thread");
+
+        assert!(shared.view().reachable(), "the socket file is there");
+        drop(listener);
+        std::fs::remove_file(&socket).expect("the socket file goes");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while shared.view().reachable() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !shared.view().reachable(),
+            "the view follows the socket file"
+        );
+        assert_eq!(icon::Mark::of(&shared.view()), icon::Mark::Unreachable);
+
+        // The loop has no stop and outlives this test on purpose: the process
+        // ends and takes it with it, which is the only thing that ends the app's
+        // own watch either.
+        drop(thread);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
