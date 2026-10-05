@@ -181,6 +181,7 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
     docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
     docs/design.md        the visual language, and what each element the design draws would cost in config
     docs/installation.md  both install routes step by step: one command, and the same work by hand
+    docs/releases/v0.1.0.md  what this build is, what its first launch needs, and what it does not do
     scripts/make-bundle.sh  Whirl.app, signed with the local identity, and the archive a release carries
     scripts/make-signing-identity.sh  the self-signed identity the bundle is signed with, created once
 

@@ -12,12 +12,23 @@ name: release
 # The signature in the archive is ad-hoc, with no notarization, which is a
 # deliberate choice: the release notes say so, and the install notes carry the
 # first-launch step a quarantined copy needs. Nothing here implies a Developer ID.
+#
+# A release is a tag on `main`, and nothing else. That rule is enforced here, not
+# assumed: the first job, `guard`, fails unless the tagged commit is an ancestor of
+# `origin/main`, and `bundle` names it in `needs:`, so a tag pushed anywhere else
+# builds nothing and publishes nothing. Ancestry covers both legitimate cases: a
+# tag exactly at `main`'s tip (a commit is its own ancestor, and the job says so),
+# and `main` having moved ahead of the tag since it was cut (the tagged commit is
+# still in `main`'s history, so the release is still the release that commit
+# describes).
 
 on:
   push:
     tags: ['v*']
   # The same artifact, on a tag that does not exist yet, for a run that has to be
-  # repeatable before the release is cut.
+  # repeatable before the release is cut. The guard below applies to this trigger
+  # too, so a rehearsal run from a branch that does not release still publishes
+  # nothing.
   workflow_dispatch:
     inputs:
       version:
@@ -33,9 +44,64 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # First in the graph, and `bundle` waits behind it: a tag that is not on `main`
+  # must publish nothing at all, and that is only true if this job is the gate the
+  # publishing job names in `needs:`. The rule it enforces (a release is a tag on
+  # `main`) is a fact about history, so this job is a fetch and one ancestry
+  # question.
+  guard:
+    name: guard (${{ github.ref_name }} is on main)
+    runs-on: ubuntu-latest
+    steps:
+      # `fetch-depth: 0`, because the check below asks a question about history and
+      # the default shallow checkout cannot answer it: with no history fetched,
+      # `git merge-base --is-ancestor` cannot connect the tagged commit to `main`
+      # and fails for every tag, `main`'s own tip included. Fetching the
+      # repository's history is the whole cost. It is safe because this job only
+      # reads: the job writes nothing, pushes nothing and is given no secret. The
+      # step below refuses to decide at all when `origin/main` is not in the
+      # checkout, so a checkout setting that regresses fails closed rather than
+      # open.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Refuse a tag whose commit is not on main
+        shell: bash
+        env:
+          # The tag and the commit reach this script through `env:`: no event
+          # payload is spliced into a `run:` step.
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null; then
+            echo "::error::origin/main is not in this checkout, so this job cannot say whether $TAG is on main. Refusing rather than publishing a release that nothing checked; the checkout needs the repository's history (fetch-depth: 0)."
+            exit 1
+          fi
+          main=$(git rev-parse origin/main)
+          echo "tag $TAG points at $SHA"
+          echo "origin/main is $main"
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            if [ "$SHA" = "$main" ]; then
+              echo "the tagged commit is main's tip"
+            else
+              echo "the tagged commit is an ancestor of main, which has moved ahead of it since the tag was cut; the release still describes the tagged commit"
+            fi
+            exit 0
+          fi
+          common=$(git merge-base "$SHA" origin/main || true)
+          if [ -n "$common" ]; then
+            echo "ancestry: $SHA is NOT an ancestor of origin/main; the two share history up to $common"
+          else
+            echo "ancestry: $SHA is NOT an ancestor of origin/main, and the two share no history at all"
+          fi
+          echo "::error::$TAG is not on main, so it is not a release. Nothing was built and no release will be published. A release is a tag on main: delete this tag, get the commit onto main, and tag main's tip."
+          exit 1
+
   bundle:
     name: bundle (macos-latest)
     runs-on: macos-latest
+    needs: [guard]
     steps:
       - uses: actions/checkout@v5
       - name: Install the pinned toolchain and its components
@@ -70,13 +136,23 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/make-bundle.sh "$VERSION"
 
-      - name: Publish the archive and its checksum
+      - name: Publish the archive, its checksum, and a pointer to the notes
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
+          set -eu
+          # The release page says nothing of its own: it points at the document, so
+          # the words live in one place and the page cannot drift from them. A page
+          # that points at a file the tag does not carry is worse than no page, so a
+          # missing notes file stops this run instead of publishing a dead link.
+          notes="docs/releases/$VERSION.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::no release notes at $notes, so this release would point at nothing. Write the notes for $VERSION, land them on main, and rerun."
+            exit 1
+          fi
           gh release create "$VERSION" \
             --title "whirl-ui $VERSION" \
-            --generate-notes \
-            --notes "Whirl.app carries an ad-hoc signature and is not notarized, so a copy that was downloaded is quarantined: the first launch is a right-click Open, or the step the install notes name. The checksum beside the archive proves the download is the file this job built; it proves nothing about who built it." \
+            --notes "Whirl.app $VERSION, and what this build is: https://github.com/$REPO/blob/$VERSION/$notes" \
             dist/*.zip dist/*.zip.sha256
