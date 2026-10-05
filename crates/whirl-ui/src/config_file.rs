@@ -298,6 +298,11 @@ pub struct FileSource {
     /// the file leaves it null, which whirl reads as "look it up in the
     /// platform's own store".
     pub key_ref: Option<String>,
+    /// A `wallhaven` source's `collection`: the daemon's own `<username>/<id>`
+    /// pair, or `None` when the file names none (a search, or a source that
+    /// predates this field). This is the pair the row shows, so what the window
+    /// would write is visible before it writes it.
+    pub collection: Option<String>,
     /// A `local` source's `paths`: the folders it reads. Empty for the other
     /// kinds. This is the one field the settings window shows that the daemon's
     /// `source:` record does not carry, and the file is where it comes from.
@@ -341,18 +346,95 @@ pub fn local_source(id: &str, folder: &str) -> serde_json::Value {
     })
 }
 
-/// The document of a new `wallhaven` source, pointing at `label`.
+/// The three forms a person has a Wallhaven collection's address in, as one
+/// sentence: the site's own address bar form, the API form, and the pair the
+/// daemon stores. It is the tail of every refusal, so the field and this file
+/// name the same three forms.
+pub const COLLECTION_FORMS: &str = "https://wallhaven.cc/user/<username>/favorites/<id>, \
+                                    https://wallhaven.cc/api/v1/collections/<username>/<id>, or \
+                                    <username>/<id>";
+
+/// The document of a new `wallhaven` source, pointing at `label` and fetching
+/// the collection `collection`.
 ///
 /// The label lands in `api_key_ref`, the one field the parser accepts a name in
 /// and refuses a key in. The key itself never reaches this function and never
 /// can: the document has no field a secret could be written into.
-pub fn wallhaven_source(id: &str, label: &str) -> serde_json::Value {
+///
+/// `collection` is the daemon's own `<username>/<id>` (`collection_of` returns
+/// it), and it is the field the daemon's worker already parses; nothing else
+/// about the entry moves.
+pub fn wallhaven_source(id: &str, label: &str, collection: &str) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "kind": "wallhaven",
         "weight": 1,
+        "collection": collection,
         "api_key_ref": label,
     })
+}
+
+/// The daemon's own `collection` value for the address a person pasted, or the
+/// one sentence that says which three forms are accepted.
+///
+/// The daemon parses `collection` as exactly two path segments, `<username>/<id>`
+/// (`whirl-worker`'s `collection_parts`), and refuses anything else by name, so
+/// every accepted form here is reduced to that pair and nothing else is
+/// invented: the string this returns is one the daemon's own parser takes.
+///
+/// The three forms are the ones a person actually holds: what the site's address
+/// bar shows, the API address the daemon itself builds, and the bare pair.
+pub fn collection_of(address: &str) -> Result<String, String> {
+    let text = address.trim();
+    if text.is_empty() {
+        return Err(collection_refusal());
+    }
+    // The two address forms lose their scheme first, then match the path the
+    // site and the API use.
+    let path = text
+        .strip_prefix("https://")
+        .or_else(|| text.strip_prefix("http://"))
+        .unwrap_or(text);
+    if let Some(rest) = path.strip_prefix("wallhaven.cc/user/") {
+        let mut parts = rest.split('/');
+        if let (Some(user), Some("favorites"), Some(id), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+            && !user.is_empty()
+            && !id.is_empty()
+        {
+            return Ok(format!("{user}/{id}"));
+        }
+        return Err(collection_refusal());
+    }
+    if let Some(rest) = path.strip_prefix("wallhaven.cc/api/v1/collections/") {
+        let mut parts = rest.split('/');
+        if let (Some(user), Some(id), None) = (parts.next(), parts.next(), parts.next())
+            && !user.is_empty()
+            && !id.is_empty()
+        {
+            return Ok(format!("{user}/{id}"));
+        }
+        return Err(collection_refusal());
+    }
+    // The bare pair, which is also what a URL matching neither form falls
+    // through to: a search URL has more than two segments and is refused. The
+    // URL characters are ruled out so a scheme-less address cannot be read as a
+    // pair by accident.
+    if !text.contains([':', '?', '#', '=']) {
+        let mut parts = text.split('/');
+        if let (Some(user), Some(id), None) = (parts.next(), parts.next(), parts.next())
+            && !user.is_empty()
+            && !id.is_empty()
+        {
+            return Ok(format!("{user}/{id}"));
+        }
+    }
+    Err(collection_refusal())
+}
+
+/// The refusal `collection_of` returns: one sentence, and the three forms in it.
+fn collection_refusal() -> String {
+    format!("that is not a Wallhaven collection: paste {COLLECTION_FORMS}")
 }
 
 /// Insert a source document, validate the result, and replace the file.
@@ -421,6 +503,34 @@ pub fn set_source_folder(
         source.insert(
             "paths".to_string(),
             serde_json::Value::Array(vec![serde_json::Value::from(folder)]),
+        );
+        Ok(())
+    })
+}
+
+/// Point the source named `id` at `collection`, and at nothing else.
+///
+/// A `wallhaven` source's `collection` is the daemon's own `<username>/<id>`
+/// pair, which `collection_of` produces from the address a person pasted. The
+/// refusal for a source of another kind is this module's own, because a
+/// `collection` key on a folder entry is not an edit the window can explain, and
+/// the daemon would have nowhere to read it.
+pub fn set_source_collection(
+    path: &Path,
+    id: &str,
+    collection: &str,
+) -> Result<SourcesWritten, WriteError> {
+    edit_sources(path, |sources| {
+        let index = index_of(sources, id)?;
+        let source = source_object_mut(&mut sources[index])?;
+        if source.get("kind").and_then(|kind| kind.as_str()) != Some("wallhaven") {
+            return Err(WriteError::Refused(format!(
+                "{SOURCES_KEY}: the source named {id:?} is not a Wallhaven collection"
+            )));
+        }
+        source.insert(
+            "collection".to_string(),
+            serde_json::Value::from(collection),
         );
         Ok(())
     })
@@ -523,6 +633,10 @@ fn file_source(source: &SourceConfig) -> FileSource {
             .wallhaven
             .as_ref()
             .and_then(|wallhaven| wallhaven.api_key_ref.clone()),
+        collection: source
+            .wallhaven
+            .as_ref()
+            .and_then(|wallhaven| wallhaven.collection.clone()),
         paths: source
             .local
             .as_ref()
@@ -781,13 +895,22 @@ mod tests {
     #[test]
     fn a_new_wallhaven_source_lands_the_label_and_the_parser_reads_it_back() {
         let path = config_at("add-wallhaven", &with_sources());
-        let written = add_source(&path, wallhaven_source("art", crate::keychain::LABEL))
-            .expect("the write lands");
+        let written = add_source(
+            &path,
+            wallhaven_source("art", crate::keychain::LABEL, "alice/12345"),
+        )
+        .expect("the write lands");
 
         assert_eq!(written.sources.len(), 3, "{:?}", written.sources);
         let landed = std::fs::read_to_string(&path).expect("the file");
         assert!(
             landed.contains(r#""api_key_ref": "keychain:whirl-wallhaven""#),
+            "{landed}"
+        );
+        // The pair the daemon's worker parses, and the only thing this edit
+        // added beside the label.
+        assert!(
+            landed.contains(r#""collection": "alice/12345""#),
             "{landed}"
         );
         // Everything the edit did not own is still there.
@@ -802,6 +925,98 @@ mod tests {
         );
         assert_eq!(last.kind, "wallhaven");
         assert_eq!(last.key_ref.as_deref(), Some(crate::keychain::LABEL));
+        assert_eq!(last.collection.as_deref(), Some("alice/12345"));
+        // The value is one the daemon's own parser reads back off the file.
+        let loaded = Config::parse(&landed).expect("the written file parses");
+        assert_eq!(
+            loaded.config.sources[2]
+                .wallhaven
+                .as_ref()
+                .and_then(|wallhaven| wallhaven.collection.as_deref()),
+            Some("alice/12345")
+        );
+    }
+
+    #[test]
+    fn the_three_address_forms_a_person_has_all_reduce_to_the_daemons_pair() {
+        for address in [
+            "https://wallhaven.cc/user/alice/favorites/12345",
+            "https://wallhaven.cc/api/v1/collections/alice/12345",
+            "alice/12345",
+        ] {
+            assert_eq!(
+                collection_of(address),
+                Ok("alice/12345".to_string()),
+                "{address}"
+            );
+        }
+        // Whitespace around a pasted address is not part of it.
+        assert_eq!(
+            collection_of("  https://wallhaven.cc/user/alice/favorites/12345\n"),
+            Ok("alice/12345".to_string())
+        );
+    }
+
+    #[test]
+    fn an_address_that_is_none_of_the_three_forms_is_refused_in_one_sentence() {
+        for address in [
+            "https://wallhaven.cc/search?q=nebula",
+            "https://wallhaven.cc/user/alice/favorites",
+            "https://wallhaven.cc/user/alice/favorites/",
+            "12345",
+            "",
+        ] {
+            let reason = collection_of(address).expect_err("a refusal").to_string();
+            // The sentence names all three accepted forms, so a person can fix
+            // what they pasted without opening a document.
+            for form in [
+                "https://wallhaven.cc/user/<username>/favorites/<id>",
+                "https://wallhaven.cc/api/v1/collections/<username>/<id>",
+                "<username>/<id>",
+            ] {
+                assert!(reason.contains(form), "{address}: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_collection_can_be_added_and_changed_and_the_documents_other_keys_survive() {
+        let path = config_at("change-collection", &with_sources());
+        // `space` is a Wallhaven source with a `query` and no `collection` yet.
+        let landed = set_source_collection(&path, "space", "alice/999").expect("the write lands");
+        assert_eq!(landed.sources[1].collection.as_deref(), Some("alice/999"));
+        let after = std::fs::read_to_string(&path).expect("the file");
+        assert!(after.contains(r#""collection": "alice/999""#), "{after}");
+        // The keys the edit did not own are the same keys they were.
+        for keep in [
+            "\"query\": \"nebula\"",
+            "\"weight\": 3",
+            "\"id\": \"space\"",
+            "\"_comment_1\"",
+            "\"a_key_no_build_has\"",
+        ] {
+            assert!(after.contains(keep), "{keep} is gone:\n{after}");
+        }
+
+        // Changing it again moves only that value.
+        set_source_collection(&path, "space", "bob/7").expect("the write lands");
+        let again = std::fs::read_to_string(&path).expect("the file");
+        assert!(again.contains(r#""collection": "bob/7""#), "{again}");
+        assert!(!again.contains("alice/999"), "{again}");
+    }
+
+    #[test]
+    fn a_folder_source_is_not_a_wallhaven_collection_and_the_file_is_untouched() {
+        let path = config_at("collection-wrong-kind", &with_sources());
+        let before = std::fs::read(&path).expect("the file");
+        let error = set_source_collection(&path, "pictures", "alice/12345")
+            .expect_err("a folder has no collection");
+        assert!(
+            matches!(&error, WriteError::Refused(message)
+                if message.contains("is not a Wallhaven collection")),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).expect("the file"), before);
     }
 
     #[test]
@@ -813,7 +1028,11 @@ mod tests {
         let before = std::fs::read(&path).expect("the file");
         let error = add_source(
             &path,
-            wallhaven_source("art", "example0example0example0example0example0"),
+            wallhaven_source(
+                "art",
+                "example0example0example0example0example0",
+                "alice/12345",
+            ),
         )
         .expect_err("a key-shaped label is refused");
         assert!(

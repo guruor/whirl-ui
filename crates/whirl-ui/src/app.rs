@@ -35,9 +35,10 @@ use eframe::egui::{
 
 use crate::about;
 use crate::settings::{
-    self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE, Daemon,
-    KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE,
-    SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
+    self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE,
+    COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES,
+    PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, SUBTITLE,
+    Settings, Unit, WINDOW_TITLE,
 };
 use crate::theme;
 
@@ -507,11 +508,14 @@ enum Click {
     Toggle(String, bool),
     Change(String),
     Key,
+    ChangeUrl(String),
     Remove(String),
     AddFolder,
     AddWallhaven,
     SaveKey,
     CancelKey,
+    SaveCollection,
+    CancelCollection,
     PickerUp,
     PickerInto(PathBuf),
     PickerChoose,
@@ -587,16 +591,48 @@ fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
         });
     }
 
+    if settings.collection.open {
+        ui.add_space(theme::SPACE_MD);
+        card(ui, |ui| {
+            section(ui, COLLECTION_TITLE);
+            ui.add_space(theme::SPACE_SM);
+            ui.horizontal(|ui| {
+                // A collection's address is not a secret, so it is drawn as
+                // typed: it is what the person pasted, and seeing it is how they
+                // check it before saving.
+                ui.add(
+                    egui::TextEdit::singleline(&mut settings.collection.url).desired_width(360.0),
+                );
+                if primary_button(ui, "Save").clicked() {
+                    clicks.push(Click::SaveCollection);
+                }
+                if ui.button("Cancel").clicked() {
+                    clicks.push(Click::CancelCollection);
+                }
+            });
+            ui.add_space(theme::SPACE_XS);
+            caption(ui, COLLECTION_LINE);
+            caption(ui, COLLECTION_TOKEN_NOTE);
+            if let Some(problem) = &settings.collection.problem {
+                ui.add_space(theme::SPACE_XS);
+                banner(ui, problem.as_str(), theme::STATE_BAD);
+            }
+        });
+    }
+
     for click in clicks {
         match click {
             Click::Toggle(id, enabled) => settings.set_source_enabled(&id, enabled),
             Click::Change(id) => settings.open_picker(Some(id)),
             Click::Key => settings.key.open = true,
+            Click::ChangeUrl(id) => settings.edit_collection(&id),
             Click::Remove(id) => settings.remove_source(&id),
             Click::AddFolder => settings.open_picker(None),
-            Click::AddWallhaven => settings.add_wallhaven(),
+            Click::AddWallhaven => settings.ask_for_collection(),
             Click::SaveKey => settings.save_key(),
             Click::CancelKey => settings.key.open = false,
+            Click::SaveCollection => settings.save_collection(),
+            Click::CancelCollection => settings.cancel_collection(),
             // The chooser's clicks are recorded by `picker`, which is the only
             // place they can be made.
             Click::PickerUp | Click::PickerInto(_) | Click::PickerChoose | Click::PickerCancel => {}
@@ -651,6 +687,11 @@ fn row_card(ui: &mut egui::Ui, row: &crate::settings::Row, clicks: &mut Vec<Clic
                         && ui.button("Enter key…").clicked()
                     {
                         clicks.push(Click::Key);
+                    }
+                    if matches!(row.kind, Kind::Wallhaven { .. })
+                        && ui.button("Change URL…").clicked()
+                    {
+                        clicks.push(Click::ChangeUrl(row.id.clone()));
                     }
                     if row.changeable_folder().is_some() && ui.button("Change…").clicked() {
                         clicks.push(Click::Change(row.id.clone()));
@@ -879,11 +920,14 @@ fn picker(ui: &mut egui::Ui, settings: &mut Settings) {
             Click::Toggle(..)
             | Click::Change(..)
             | Click::Key
+            | Click::ChangeUrl(..)
             | Click::Remove(..)
             | Click::AddFolder
             | Click::AddWallhaven
             | Click::SaveKey
-            | Click::CancelKey => {}
+            | Click::CancelKey
+            | Click::SaveCollection
+            | Click::CancelCollection => {}
         }
     }
 }
