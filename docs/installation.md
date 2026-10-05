@@ -276,8 +276,12 @@ The flag is what decides whether you meet that refusal as a dialog. macOS sets
 `com.apple.quarantine` on anything it can tell arrived from the network, a browser download included.
 Launch a quarantined copy and Gatekeeper refuses it: the app does not open, and the dialog offers to
 move it to the Bin or to cancel the launch. Apple's wording in that dialog moves between releases;
-what does not move is the refusal and the way through it, and the dialog's exact text was not observed
-for this bundle. That way through is to launch it once and refuse it, then allow it under **System
+what does not move is the refusal and the way through it. A build of this bundle refused on macOS 26.7
+read:
+
+    "Whirl.app" Not Opened — Apple could not verify "Whirl.app" is free of malware — [Move to Trash] [Done]
+
+with no button that opens it anyway. A later macOS may word it differently. That way through is to launch it once and refuse it, then allow it under **System
 Settings → Privacy & Security → Open Anyway**, or to clear the flag ahead of time:
 
     xattr -l /Applications/Whirl.app                      # shows com.apple.quarantine, if it is there

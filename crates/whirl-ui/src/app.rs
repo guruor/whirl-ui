@@ -19,8 +19,8 @@
 //! person reads twice: every heading, button, line and refusal comes from a
 //! constant or a method on the value in `settings`, so the window on screen and
 //! the text `--dump-settings` prints cannot drift apart. The window's *shape* is
-//! [`crate::theme`]'s: the sidebar, the cards, the segmented control, the rows,
-//! the toggles and the footer are drawn in the reference's palette and metrics,
+//! [`crate::theme`]'s: the sidebar, the cards, the rows, the toggles and the
+//! footer are drawn in the reference's palette and metrics,
 //! and nothing here picks a colour or a size of its own.
 //!
 //! Nothing here opens a socket to change a setting, so no part of an edit is a
@@ -33,9 +33,11 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Layout, Margin, RichText, Stroke,
 };
 
+use crate::about;
 use crate::settings::{
-    self, APP_DAEMON_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, Pane, ROTATION_LINE,
-    ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
+    self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE, Daemon,
+    KEY_LINE, Kind, NO_SOURCES, PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE,
+    SOURCES_TITLE, SUBTITLE, Settings, Unit, WINDOW_TITLE,
 };
 use crate::theme;
 
@@ -50,9 +52,6 @@ use crate::theme;
 /// is. These two words are the footer's and appear nowhere the text dump reads.
 const CONNECTED: &str = "Connected";
 const NOT_CONNECTED: &str = "Not connected";
-
-/// The version the footer carries: this app's, the one the build put in it.
-const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// The app: whatever it knows, and which windows are open.
 pub struct App {
@@ -119,6 +118,15 @@ impl App {
     /// Close the dialog. The app keeps running.
     pub fn close_settings(&mut self) {
         self.settings = None;
+    }
+
+    /// Whether the dialog is on screen. Closing it is a state the app sits in
+    /// rather than an exit, so this is how a caller tells the two apart, and the
+    /// tray is one: the window is on screen exactly while this is true
+    /// (`crate::tray`, `App::state_window`).
+    #[allow(dead_code)] // The tray is the only caller, and the tray is macOS-only.
+    pub fn open(&self) -> bool {
+        self.settings.is_some()
     }
 
     /// The window the dialog is showing, or `None` while it is closed. The tests
@@ -215,7 +223,7 @@ impl eframe::App for App {
     }
 }
 
-/// Draw the window: the app's mark and its three panes, on one rail.
+/// Draw the window: the app's mark and its four panes, on one rail.
 ///
 /// The menu bar item's `Settings…` row and the standalone window are the same
 /// window, and this is what makes them the same: one body, drawn from one
@@ -223,10 +231,12 @@ impl eframe::App for App {
 /// other. The tray owns the viewport and this owns what is in it.
 ///
 /// The shape is the reference's: a sidebar carrying the mark, the wordmark, the
-/// pane rows and a status footer, and a centre panel carrying the pane's title,
-/// the segmented control and the pane itself. The three panes are the three
-/// blocks the window has always drawn; naming them adds no pane, and the
-/// sidebar lists exactly them rather than the reference's future sections.
+/// pane rows and a status footer, and a centre panel carrying the pane's title
+/// and the pane itself. The pane list is the sidebar's alone: the centre panel's
+/// top strip is reserved for a pane's own sub-views and carries no control over
+/// the panes (see [`header`]). The four panes are the four blocks the window
+/// has always drawn; naming them adds no pane, and the sidebar lists exactly them
+/// rather than the reference's future sections.
 ///
 /// While the folder chooser is open it is the whole centre panel: the choice it
 /// is making is the only thing on screen, and a half-drawn list of folders under
@@ -244,13 +254,14 @@ pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
                 picker(ui, settings);
                 return;
             }
-            header(ui, settings);
+            header(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| match settings.pane {
                     Pane::Sources => sources(ui, settings),
                     Pane::Rotation => rotation(ui, settings),
                     Pane::App => app_pane(ui, settings),
+                    Pane::About => about_pane(ui, settings),
                 });
         });
 }
@@ -345,7 +356,7 @@ fn footer(ui: &mut egui::Ui, settings: &Settings) {
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
-                RichText::new(VERSION)
+                RichText::new(format!("v{}", settings.running_version()))
                     .size(theme::TEXT_CAPTION)
                     .color(theme::TEXT_MUTED),
             );
@@ -353,8 +364,17 @@ fn footer(ui: &mut egui::Ui, settings: &Settings) {
     });
 }
 
-/// The pane's title, its subtitle, and the control that moves between panes.
-fn header(ui: &mut egui::Ui, settings: &mut Settings) {
+/// The pane's title, its subtitle, and the strip below them that is reserved
+/// for a pane's own sub-views.
+///
+/// **The top strip is for a pane's sub-views, never for the pane list.** A
+/// segmented control over [`Pane`] was drawn here once, beside the sidebar's
+/// rows, and the two controls did the same job in two languages; the sidebar is
+/// the pane list and this strip is for what a pane grows *inside* itself. A pane
+/// that gains sub-views (tabs within Sources, modes within Rotation) puts its
+/// control here, and it moves between that pane's views and never between panes.
+/// Adding a pane is a row in [`sidebar`], not a second control here.
+fn header(ui: &mut egui::Ui) {
     ui.label(
         RichText::new(WINDOW_TITLE)
             .size(theme::TEXT_TITLE)
@@ -367,43 +387,6 @@ fn header(ui: &mut egui::Ui, settings: &mut Settings) {
             .color(theme::TEXT_SECONDARY),
     );
     ui.add_space(theme::SPACE_MD);
-    segmented(ui, settings);
-    ui.add_space(theme::SPACE_MD);
-}
-
-/// The segmented control: one pill per pane, the selected one in the accent.
-fn segmented(ui: &mut egui::Ui, settings: &mut Settings) {
-    let current = settings.pane;
-    egui::Frame::NONE
-        .fill(theme::PANEL)
-        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
-        .inner_margin(Margin::same(4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for pane in Pane::ALL {
-                    let selected = pane == current;
-                    let label =
-                        RichText::new(pane.name())
-                            .size(theme::TEXT_BODY)
-                            .color(if selected {
-                                Color32::WHITE
-                            } else {
-                                theme::TEXT_SECONDARY
-                            });
-                    let pill = egui::Button::new(label)
-                        .corner_radius(CornerRadius::same(theme::RADIUS_SM))
-                        .fill(if selected {
-                            theme::ACCENT
-                        } else {
-                            theme::PANEL
-                        })
-                        .min_size(egui::vec2(104.0, theme::CONTROL_HEIGHT - 4.0));
-                    if ui.add(pill).clicked() {
-                        settings.pane = pane;
-                    }
-                }
-            });
-        });
 }
 
 /// One raised surface in the palette: the card everything else is drawn in.
@@ -763,7 +746,69 @@ fn app_pane(ui: &mut egui::Ui, settings: &Settings) {
         }
         caption(ui, APP_DAEMON_NOTE);
         ui.add_space(theme::SPACE_XS);
-        caption(ui, &format!("version {VERSION}"));
+        caption(ui, &format!("version v{}", settings.running_version()));
+    });
+}
+
+/// The About pane: what this app is, which build is running, where its source
+/// is, the daemon, and the one request this app ever makes.
+///
+/// The release check is a button and not a timer: pressing it is the whole of
+/// the trigger, and the answer is drawn under it. A check that could not be made
+/// is drawn as a failure rather than as silence, because silence is what "up to
+/// date" looks like.
+///
+/// The source is a selectable label so it can be copied into a report rather
+/// than retyped from a screenshot.
+fn about_pane(ui: &mut egui::Ui, settings: &mut Settings) {
+    let version_lines = settings.version_lines();
+    let daemon_line = settings.daemon_line();
+    let check = settings.check.clone();
+
+    surface(ui, theme::HAIRLINE, |ui| {
+        section(ui, ABOUT_TITLE);
+        ui.add_space(theme::SPACE_XS);
+        note(ui, ABOUT_LINE);
+        ui.add_space(theme::SPACE_SM);
+        for line in &version_lines {
+            caption(ui, line);
+        }
+        ui.add_space(theme::SPACE_SM);
+        caption(ui, "source:");
+        ui.add(
+            egui::Label::new(
+                RichText::new(about::SOURCE_URL)
+                    .size(theme::TEXT_BODY)
+                    .color(theme::ACCENT_HIGHLIGHT),
+            )
+            .selectable(true),
+        );
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, &daemon_line);
+    });
+
+    ui.add_space(theme::SPACE_MD);
+
+    card(ui, |ui| {
+        section(ui, CHECK_TITLE);
+        ui.add_space(theme::SPACE_SM);
+        let pressed = primary_button(ui, CHECK_LABEL).clicked();
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, CHECK_LINE);
+        if let Some(check) = &check {
+            ui.add_space(theme::SPACE_SM);
+            match check {
+                about::Check::CouldNot { .. } => {
+                    banner(ui, check.line().as_str(), theme::STATE_BAD);
+                }
+                _ => note(ui, check.line().as_str()),
+            }
+        }
+        // The whole of the button: one on-demand call, made where the person
+        // pressed it. Nothing here is on a timer and nothing runs it twice.
+        if pressed {
+            settings.check_release();
+        }
     });
 }
 
@@ -1010,17 +1055,20 @@ mod tests {
     }
 
     #[test]
-    fn the_three_panes_are_the_three_blocks_the_window_prints() {
+    fn the_four_panes_are_the_four_blocks_the_window_prints() {
         // Naming the panes groups what the window already said; it adds none.
         // Each pane's heading is a block of the text dump, so a pane that lost
         // its heading would be a pane the dump does not carry.
         let settings = window();
         let text = settings.to_text();
         let names: Vec<&str> = Pane::ALL.into_iter().map(Pane::name).collect();
-        assert_eq!(names, vec!["Sources", "Rotation", "App"]);
+        assert_eq!(names, vec!["Sources", "Rotation", "App", "About"]);
         assert!(text.contains(SOURCES_TITLE), "{text}");
         assert!(text.contains(ROTATION_TITLE), "{text}");
         assert!(text.contains("whirl is not running"), "{text}");
+        // The About pane is the block the check lives in.
+        assert!(text.contains(ABOUT_TITLE), "{text}");
+        assert!(text.contains(CHECK_LABEL), "{text}");
         assert_eq!(Pane::default(), Pane::Sources);
     }
 }
