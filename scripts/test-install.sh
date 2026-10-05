@@ -29,6 +29,9 @@
 #      says so
 #   4. uninstall.sh over scenario 1's receipt     -> the app and the daemon binaries go,
 #      and nothing else does
+#   5. the daemon's login unit                     -> install.sh asks whirl's own command
+#      to install it, the receipt records it as whirl's, and uninstall.sh asks the same
+#      command to remove it
 #
 # Every scenario also checks the receipt: it names the daemon binaries in the replaced and
 # the reused case alike.
@@ -73,23 +76,46 @@ receipt_has() {
 }
 
 # write_daemon <dir> <kind>: the three binaries, as one release answers. kind is `pinned`
-# (0.2.0, with `--version` and the `daemon` command), `versioned-old` (0.1.0, with
-# `--version`) or `unversioned-old` (neither).
+# (0.2.0, with `--version` and the whole `daemon` verb list, the login-unit pair included),
+# `versioned-old` (0.1.0, with `--version`) or `unversioned-old` (neither). The two older
+# kinds list no `daemon` verb at all, which is how whirl v0.1 answered, and the pinned one
+# writes each unit verb it is asked for into $WHIRL_UNIT_LOG when that is set.
 write_daemon() {
     dir=$1
     kind=$2
     mkdir -p "$dir"
     case "$kind" in
         pinned)
+            # The released v0.2 CLI's own verb list, the login-unit pair included. A
+            # stand-in answers `daemon install` and `daemon uninstall` by leaving a mark in
+            # $WHIRL_UNIT_LOG, which is what makes the unit path observable from outside:
+            # this list stopped at `daemon start` before, so install.sh could ask for a
+            # verb no stand-in had and no scenario would have noticed.
             cat > "$dir/whirl" <<'SCRIPT'
 #!/bin/sh
+usage() {
+    printf 'usage: whirl <command>\n'
+    printf '  next                 set the next image now\n'
+    printf '  daemon install       write the login unit and load it (macOS)\n'
+    printf '  daemon uninstall     stop the daemon and remove the login unit (macOS)\n'
+    printf '  daemon start         ask the supervisor to start the daemon (macOS)\n'
+    printf '  daemon stop          ask the supervisor to stop the daemon (macOS)\n'
+    printf '  help                 this text\n'
+}
 case "${1-}" in
     --version) printf 'whirl 0.2.0\n'; exit 0 ;;
+    help) usage; exit 0 ;;
+    daemon)
+        case "${2-}" in
+            install|uninstall|start|stop|status)
+                [ -n "${WHIRL_UNIT_LOG-}" ] && printf '%s\n' "$2" >> "$WHIRL_UNIT_LOG"
+                exit 0
+                ;;
+        esac
+        ;;
 esac
+usage >&2
 printf 'whirl: a command is required\n' >&2
-printf 'usage: whirl <command>\n' >&2
-printf '  next                 set the next image now\n' >&2
-printf '  daemon start         ask the supervisor to start the daemon (macOS)\n' >&2
 exit 3
 SCRIPT
             side=pinned
@@ -307,5 +333,39 @@ printf '%s\n' "$out"
 [ -f "$keeper/keep" ] || fail "scenario 4: uninstall.sh removed something the receipt did not name"
 scenarios=$((scenarios + 1))
 ok "scenario 4: the receipt's paths went, the untouched file stayed"
+
+# ---------------------------------------------------------------------------
+# 5. the daemon's login unit goes in and comes out through whirl's own commands
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 5: whirl's own login-unit verbs are the ones the scripts ask for ==="
+prefix=$work/s5/prefix
+ui=$work/s5/ui
+receipt=$work/s5/receipt
+unit_log=$work/s5/unit.log
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+write_daemon "$prefix" unversioned-old
+WHIRL_UNIT_LOG="$unit_log"
+export WHIRL_UNIT_LOG
+out=$(run_install "$prefix" "$ui" "$receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 5: install.sh exited $status"
+grep -qx install "$unit_log" 2>/dev/null ||
+    fail "scenario 5: install.sh never asked whirl to install its login unit, so nothing comes up at login"
+contains "$out" "whirl daemon install" ||
+    fail "scenario 5: the run does not name the whirl command that installed the unit"
+receipt_has "$receipt" "unit delegated" ||
+    fail "scenario 5: the receipt does not record the login unit as whirl's, so uninstall.sh would leave it"
+out=$(PATH="$sys_path" WHIRL_UI_RECEIPT="$receipt" sh "$root/uninstall.sh" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 5: uninstall.sh exited $status"
+grep -qx uninstall "$unit_log" 2>/dev/null ||
+    fail "scenario 5: uninstall.sh never asked whirl to remove its login unit"
+unset WHIRL_UNIT_LOG
+scenarios=$((scenarios + 1))
+ok "scenario 5: whirl installed the login unit on the way in, and removed it on the way out"
 
 printf '\ntest-install: all %s scenarios passed\n' "$scenarios"
