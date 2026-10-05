@@ -4,11 +4,14 @@
 //! is a dialog behind one row of it. The dialog is the settings window [`app`]
 //! draws, so the `Settings…` row opens the one settings window this repository
 //! has, and closing it leaves the app up, which is the rule the standalone window
-//! already carried. Everything that reaches the socket does it through
-//! `whirlui-client`, so section 8's "must never" list holds by construction: this
-//! module writes no state file, calls no platform setter, and never starts, stops
-//! or restarts the daemon. It also never polls: one subscription is the only
-//! source of change, and the two threads below block on it and on a channel.
+//! Everything that reaches the socket does it through `whirlui-client`, so
+//! section 8's "must never" list holds by construction: this module writes no
+//! state file, calls no platform setter, and spawns no daemon of its own. The
+//! daemon is started, stopped or asked about only through the daemon's own
+//! command, in [`crate::daemon_cli`]: the OS supervisor owns the job, and this
+//! app asks it rather than starting a second daemon. It also never polls: one
+//! subscription is the only source of change, and the two threads below block on
+//! it and on a channel.
 //!
 //! The shape is three pieces:
 //!
@@ -41,9 +44,11 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use whirlui_client::{Client, ClientError, Event, Subscription, Update};
 
 use crate::app;
+use crate::daemon_cli::{self, Verb};
 use crate::dump::{self, EXIT_OK, EXIT_USAGE};
 use crate::icon;
 use crate::menu::{self, Action, Row, RowId};
+use crate::prefs;
 use crate::settings::Settings;
 use crate::settings::{WINDOW_SIZE, WINDOW_TITLE};
 use crate::state::View;
@@ -77,6 +82,10 @@ struct Shared {
     view: Mutex<View>,
     ui: Mutex<Option<egui::Context>>,
     requests: Mutex<Requests>,
+    /// The daemon command's own answer, waiting to be drawn as a line in the
+    /// menu. Cleared when the daemon starts answering again, so a report is
+    /// never left standing next to a daemon that is running.
+    report: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -85,6 +94,7 @@ impl Shared {
             view: Mutex::new(View::offline()),
             ui: Mutex::new(None),
             requests: Mutex::new(Requests::default()),
+            report: Mutex::new(None),
         }
     }
 
@@ -122,6 +132,11 @@ impl Shared {
             *slot = view;
             line
         };
+        // A daemon that answers again has nothing pending, so the last report is
+        // dropped here: it described the state that just ended.
+        if self.view().reachable() {
+            *self.report.lock().expect("the report") = None;
+        }
         self.changed(&line);
     }
 
@@ -202,6 +217,22 @@ impl Shared {
     fn take_quit_request(&self) -> bool {
         std::mem::take(&mut self.requests.lock().expect("the requests").quit)
     }
+
+    /// The line the app is reporting about the daemon's lifecycle, if any.
+    fn report(&self) -> Option<String> {
+        self.report.lock().expect("the report").clone()
+    }
+
+    /// Record the daemon command's own answer, for the menu to draw.
+    ///
+    /// The answer is kept verbatim: a start that refused and a start that was
+    /// done are both the daemon's words, and the app's job is to show them
+    /// rather than to summarise them. One ask to draw goes with it, so the line
+    /// reaches the menu without waiting for the next event.
+    fn set_report(&self, report: Option<String>) {
+        *self.report.lock().expect("the report") = report;
+        self.with_ui(egui::Context::request_repaint);
+    }
 }
 
 /// Follow the daemon and keep the view current.
@@ -270,6 +301,21 @@ fn commands(rx: Receiver<Action>, shared: Arc<Shared>) {
             shared.request_window(Settings::from_answers(&answers));
             continue;
         }
+        // `Start whirl` is the daemon's own lifecycle command rather than a
+        // protocol verb, so it never opens a socket and never reaches `perform`.
+        // This is the app's one place that asks the daemon to start, and the
+        // request is the daemon's own words: a refusal is kept for the menu
+        // exactly as a start that was done is.
+        if action == Action::StartDaemon {
+            let outcome = daemon_cli::run(Verb::Start);
+            eprintln!(
+                "whirl-ui: {} the start step said: {}",
+                unix_nanos(),
+                outcome.words()
+            );
+            shared.set_report(Some(outcome.words().to_string()));
+            continue;
+        }
         let mut connection = match client.take() {
             Some(connection) => connection,
             None => match Client::connect() {
@@ -317,10 +363,12 @@ fn perform(client: &mut Client, action: Action) -> Result<(), ClientError> {
         Action::Pause => client.pause(),
         Action::Resume => client.resume(),
         Action::Favourite => client.favorite(None).map(|_| ()),
-        // Neither is a daemon verb: `Settings…` is this app's window and `Quit`
-        // is this process, and no clicked row reaches here as either. The arm
-        // stays so that a verb added to `Action` cannot be forgotten here.
-        Action::Settings | Action::Quit => Ok(()),
+        // None of these is a daemon verb: `Settings…` is this app's window,
+        // `Quit` is this process, and `Start whirl` is the daemon's own command
+        // rather than a protocol verb, performed on the command thread before a
+        // connection is opened (`commands`). The arms stay so that a verb added
+        // to `Action` cannot be forgotten here.
+        Action::StartDaemon | Action::Settings | Action::Quit => Ok(()),
     }
 }
 
@@ -415,7 +463,14 @@ impl App {
     ) -> Result<App, Box<dyn std::error::Error + Send + Sync>> {
         shared.attach(&cc.egui_ctx);
 
-        let rendered = menu::rows(&shared.view());
+        // The launch offer, before anything is drawn: the daemon's own command is
+        // asked once, here, and its answer is what the menu's line shows. It is
+        // not a dialog and it never blocks the menu bar item (`Constraints`): a
+        // daemon that is absent gets a control to start it, not an interruption.
+        // The one run that starts anything is the first one.
+        shared.set_report(launch_report(daemon_cli::launch()));
+
+        let rendered = menu::rows_reporting(&shared.view(), shared.report().as_deref());
         let mark = icon::Mark::of(&shared.view());
         let tray = tray_icon::TrayIconBuilder::new()
             // The picture is the whole label: one mark, and no title beside it,
@@ -620,6 +675,126 @@ fn click(id: &str) -> Click {
     }
 }
 
+/// The line the launch offer leaves in the menu, if any.
+///
+/// Only a start that was attempted has something to report: a daemon the
+/// supervisor already runs was not touched, and a daemon that is merely absent
+/// is what the menu's own first line already says. A start that refused is the
+/// case worth keeping on screen, and it keeps the daemon's words.
+fn launch_report(launched: daemon_cli::Launched) -> Option<String> {
+    match launched {
+        daemon_cli::Launched::Present(_) | daemon_cli::Launched::Absent(_) => None,
+        daemon_cli::Launched::Started(outcome) => Some(outcome.words().to_string()),
+    }
+}
+
+/// The checkbox answer as the value the quit plan is built from.
+fn answer_of(stop: bool) -> daemon_cli::QuitAnswer {
+    if stop {
+        daemon_cli::QuitAnswer::StopWhirl
+    } else {
+        daemon_cli::QuitAnswer::KeepRunning
+    }
+}
+
+/// What the quit question came back with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitChoice {
+    /// The person pressed Cancel: nothing closes and the daemon is untouched.
+    Cancel,
+    /// Close the app, and stop the daemon when `stop`.
+    Quit { stop: bool, remember: bool },
+}
+
+/// Ask the quit question: one question, one unchecked box for the daemon, and
+/// one for remembering the answer.
+///
+/// The question is a macOS alert, which is the platform's own way to ask before
+/// an app closes, and the sentence carries the meaning rather than leaving it to
+/// the label: unchecked, whirl keeps running. The two boxes are ordinary switch
+/// buttons in the alert's accessory view, so both wordings are the app's own on
+/// every macOS version rather than whatever a suppression checkbox is titled
+/// today. The daemon's own answer to a stop that follows is what a refusal is
+/// reported with (`report_alert`).
+fn ask_quit() -> QuitChoice {
+    use objc2::MainThreadMarker;
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{
+        NSAlert, NSAlertFirstButtonReturn, NSButton, NSButtonType, NSControlStateValueOn, NSView,
+    };
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+    // A dialog needs the main thread. A run without one has no way to ask, and
+    // the safe answer is to close the app and leave the daemon as it is.
+    let Some(mtm) = MainThreadMarker::new() else {
+        return QuitChoice::Quit {
+            stop: false,
+            remember: false,
+        };
+    };
+
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str("Quit whirl?"));
+    alert.setInformativeText(&NSString::from_str(
+        "Unchecked, whirl keeps running after the app closes: tick \"Also stop whirl\" to stop the daemon now.",
+    ));
+
+    let stop = NSButton::new(mtm);
+    stop.setButtonType(NSButtonType::Switch);
+    stop.setTitle(&NSString::from_str("Also stop whirl"));
+    stop.setFrameSize(NSSize::new(220.0, 20.0));
+
+    let remember = NSButton::new(mtm);
+    remember.setButtonType(NSButtonType::Switch);
+    remember.setTitle(&NSString::from_str("Don't ask again"));
+    remember.setFrameSize(NSSize::new(220.0, 20.0));
+    remember.setFrameOrigin(NSPoint::new(0.0, 24.0));
+
+    // The alert takes one accessory view, so the two boxes share a container.
+    let boxes = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(220.0, 44.0)),
+    );
+    let stop_view: &NSView = &stop;
+    let remember_view: &NSView = &remember;
+    boxes.addSubview(stop_view);
+    boxes.addSubview(remember_view);
+    let accessory: &NSView = &boxes;
+    alert.setAccessoryView(Some(accessory));
+
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Quit"));
+    let _ = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+
+    if alert.runModal() != NSAlertFirstButtonReturn {
+        return QuitChoice::Cancel;
+    }
+    QuitChoice::Quit {
+        stop: stop.state() == NSControlStateValueOn,
+        remember: remember.state() == NSControlStateValueOn,
+    }
+}
+
+/// Show the daemon's own words when the quit could not do what it asked.
+///
+/// A refusal is not something the app hides: the person asked for the daemon to
+/// stop, the daemon said no, and its words are what says why. One button,
+/// because there is nothing to decide. A run with no main thread has no dialog
+/// to show, and the line goes to the log instead.
+fn report_alert(title: &str, message: &str) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSAlert;
+    use objc2_foundation::NSString;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("whirl-ui: {title}: {message}");
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(message));
+    alert.runModal();
+}
+
 impl eframe::App for App {
     /// The state half of a frame: what the menu shows, what a click asked for,
     /// and the window's own rule, with nothing drawn.
@@ -632,7 +807,8 @@ impl eframe::App for App {
     /// what makes a `Settings…` click work on a hidden window: the click requests
     /// a repaint, this runs, and the viewport is shown from here.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let rows = menu::rows(&self.shared.view());
+        let report = self.shared.report();
+        let rows = menu::rows_reporting(&self.shared.view(), report.as_deref());
         if rows != self.rendered {
             if let Some(tray) = self.tray.as_ref() {
                 tray.set_menu(Some(Box::new(build_menu(&rows))));
@@ -663,10 +839,39 @@ impl eframe::App for App {
             self.dialog.open_settings(panes);
         }
 
-        // The `Quit` row. `app` is told the app is going first, so the close sent
-        // below is read as the app's: the window's own rule would answer it by
-        // hiding the viewport, and the app would stay up.
+        // The `Quit` row. The one question is asked here, on the UI thread,
+        // before anything closes, and only when no answer is remembered: with
+        // "don't ask again" ticked once, every later quit behaves as remembered
+        // and shows nothing. `app` is told the app is going first, so the close
+        // sent below is read as the app's: the window's own rule would answer it
+        // by hiding the viewport, and the app would stay up.
         if self.shared.take_quit_request() {
+            let remembered = prefs::quit_answer();
+            let choice = match remembered {
+                // The question has been answered for good; it is not asked.
+                Some(stop) => QuitChoice::Quit {
+                    stop,
+                    remember: false,
+                },
+                None => ask_quit(),
+            };
+            let (stop, remember) = match choice {
+                QuitChoice::Cancel => {
+                    // Nothing closes and the daemon is untouched: the quit was
+                    // the person's, and they withdrew it.
+                    return;
+                }
+                QuitChoice::Quit { stop, remember } => (stop, remember),
+            };
+            let plan = daemon_cli::quit_plan(remembered, answer_of(stop), remember);
+            if let Some(outcome) = daemon_cli::finish_quit(plan)
+                && !outcome.done()
+            {
+                // The daemon refused to stop, and its own words are what says
+                // so. The app still goes: the quit was the person's, and the
+                // answer is reported rather than obeyed.
+                report_alert("whirl could not be stopped", outcome.words());
+            }
             self.dialog.quit();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ctx.request_repaint();
@@ -754,17 +959,63 @@ mod tests {
     }
 
     #[test]
-    fn the_two_rows_that_are_not_daemon_verbs_never_become_one() {
+    fn the_three_rows_that_are_not_daemon_verbs_never_become_one() {
         // The one bug this mapping can have is sending the daemon a verb it does
-        // not have: `Settings…` and `Quit` belong to this process.
+        // not have: `Settings…` and `Quit` belong to this process, and
+        // `Start whirl` is the daemon's own command rather than a protocol verb,
+        // performed on the command thread before a socket is opened (`commands`).
         assert_eq!(click(RowId::Settings.key()), Click::Show);
         assert_eq!(click(RowId::Quit.key()), Click::Quit);
+        assert_eq!(
+            click(RowId::StartDaemon.key()),
+            Click::Verb(Action::StartDaemon)
+        );
         for id in RowId::ALL {
             let resolved = click(id.key());
-            if id != RowId::Settings && id != RowId::Quit {
+            if !matches!(id, RowId::Settings | RowId::Quit | RowId::StartDaemon) {
                 assert!(!matches!(resolved, Click::Show | Click::Quit));
             }
         }
+    }
+
+    #[test]
+    fn a_report_is_kept_verbatim_and_dropped_once_the_daemon_answers() {
+        // The daemon's own answer is what the menu draws, and it is dropped the
+        // moment the daemon answers again: a report left standing beside a
+        // running daemon would be a line about a state that has ended.
+        let shared = Shared::new();
+        assert_eq!(shared.report(), None, "nothing reported yet");
+        shared.set_report(Some("whirl: no unit at /x".to_string()));
+        assert_eq!(shared.report().as_deref(), Some("whirl: no unit at /x"));
+
+        shared.replace(View::live(status_for_report()));
+        assert_eq!(
+            shared.report(),
+            None,
+            "a daemon that answers again has nothing pending"
+        );
+
+        // A daemon that is still unreachable keeps the last report: it is what
+        // says why the start did not work.
+        shared.set_report(Some("whirl: no unit at /x".to_string()));
+        shared.replace(View::offline());
+        assert_eq!(shared.report().as_deref(), Some("whirl: no unit at /x"));
+    }
+
+    /// A daemon state to hand `Shared::replace`, for the report test above: the
+    /// keys the menu reads, in 2.10's shape.
+    fn status_for_report() -> whirlui_client::Status {
+        whirlui_client::Status::from_lines(&[
+            "daemon_version: whirl 0.1.0".to_string(),
+            "protocol: 2".to_string(),
+            "platform: macos".to_string(),
+            "seq: 7".to_string(),
+            "paused: 0".to_string(),
+            "favorites_degraded: 0".to_string(),
+            "last_digest: d43584".to_string(),
+            "last_origin_key: pictures:8d9600e8".to_string(),
+            "source: pictures local weight=1 enabled=1 last=- reason=-".to_string(),
+        ])
     }
 
     #[test]

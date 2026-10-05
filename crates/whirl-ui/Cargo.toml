@@ -62,18 +62,27 @@ winit = { version = "0.30", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSAccessibilityProtocols",
+    "NSAlert",
+    "NSButton",
+    "NSButtonCell",
+    "NSControl",
     "NSStatusBarButton",
     "NSStatusItem",
+    "NSView",
 ] }
 # `NSBundle` is here for one question the login item answers before it registers
 # anything: is this executable inside an app bundle at all, and which one. Without
 # a bundle identifier there is nothing for macOS to register, and saying so is
 # better than registering the directory the binary happens to sit in. `NSString`
 # is the tray's, already used for the accessible name.
+#
+# `NSUserDefaults` is the app's own preference store (section 8 item 9): the
+# remembered "don't ask again" answer lives there and nowhere the daemon reads.
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSBundle",
     "NSError",
     "NSString",
+    "NSUserDefaults",
 ] }
 # The app's own login item. `SMAppService.mainApp` is the API for an app's own
 # bundle (macOS 13+), and it is the mechanism the login item is registered with:

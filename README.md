@@ -6,9 +6,12 @@ The daemon is headless. It owns the wallpaper, the rotation, the sources and eve
 it exposes no user interface at all: its interface is the socket protocol on the other side of which
 it listens. This app is an ordinary client of that protocol. It connects, reads `status`, follows
 `subscribe` for change notification and prints what the daemon reports, which means it writes no state
-file, calls no platform setter, never starts, stops or restarts the daemon, and holds no copy of the
-configuration it did not read back through the protocol. The whole of its obligation to the daemon is
-whirl's [`docs/architecture.md` section
+file, calls no platform setter, spawns no daemon of its own, and holds no copy of the configuration it
+did not read back through the protocol. Its one part in the daemon's lifecycle is the daemon's own
+command: when the daemon is not answering the app offers a `Start whirl` control, and pressing it runs
+`whirl daemon start`, which asks the OS supervisor for the job the supervisor already owns. The app
+never writes a unit file, never unlinks a socket and never kills a process. The whole of its obligation
+to the daemon is whirl's [`docs/architecture.md` section
 8](https://github.com/guruor/whirl/blob/main/docs/architecture.md#8-frontend-contract), "Frontend
 contract", which lists what a frontend may rely on and what it must never do.
 
