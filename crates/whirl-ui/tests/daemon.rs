@@ -27,7 +27,23 @@ const STAND_IN: &str = r#"#!/bin/sh
 # A stand-in for the daemon's own command. It is the single program the app is
 # allowed to start, so it records every call in one place and answers each verb.
 log=${WHIRL_STUB_LOG:?}
-printf '%s %s\n' "$1" "$2" >> "$log"
+printf '%s\n' "$*" >> "$log"
+# This binary records that it was the one the app ran, beside itself, so a test
+# with two copies can see which copy the app chose. `${0%/*}` rather than
+# `dirname`, because a test may run with almost nothing on `PATH`.
+: > "${0%/*}/ran"
+# The app identifies a binary that answered the wrong way by asking for its
+# static version. A stand-in answers only when the test gave it one, so a test
+# that does not is the build from before the flag exists.
+case "$1" in
+  --version)
+    if [ -n "${WHIRL_STUB_VERSION:-}" ]; then
+      printf '%s\n' "$WHIRL_STUB_VERSION"
+      exit 0
+    fi
+    exit 3
+    ;;
+esac
 case "$2" in
   status) code=${WHIRL_STUB_STATUS_CODE:-0}; words=${WHIRL_STUB_STATUS_WORDS:-status: com.guruor.whirl running};;
   start)  code=${WHIRL_STUB_START_CODE:-0};  words=${WHIRL_STUB_START_WORDS:-started: com.guruor.whirl};;
@@ -44,9 +60,14 @@ fi
 exit "$code"
 "#;
 
-/// A scratch directory with the stand-in in it, and the file it logs to.
+/// A scratch directory with the stand-in in it, a scratch home, and the file
+/// the stand-in logs to.
 struct Stub {
     directory: PathBuf,
+    /// A home directory of its own, so the app's search for the daemon cannot
+    /// see the machine the tests run on: no `~/.local/bin/whirl`, no receipt at
+    /// `~/Library/Application Support/whirl-ui/install.receipt`.
+    home: PathBuf,
     log: PathBuf,
 }
 
@@ -67,31 +88,67 @@ impl Stub {
             permissions.set_mode(0o755);
             std::fs::set_permissions(&command, permissions).expect("an executable stand-in");
         }
+        let home = directory.join("home");
+        std::fs::create_dir_all(&home).expect("a scratch home");
         Stub {
             log: directory.join("calls.log"),
             directory,
+            home,
         }
     }
 
-    /// Every call the app made, one `daemon <verb>` per line.
+    /// The absolute path of the stand-in, which is also the path the app must
+    /// name when it reports which binary it ran.
+    fn command(&self) -> PathBuf {
+        self.directory.join("whirl")
+    }
+
+    /// Every call the app made, one `daemon <verb>` or `--version` per line.
     fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(&self.log)
             .map(|text| text.lines().map(str::to_string).collect())
             .unwrap_or_default()
     }
 
+    /// Whether this copy was the one the app ran. The mark is beside the binary
+    /// rather than in the shared call log, so two copies in one run are told
+    /// apart.
+    fn ran(&self) -> bool {
+        self.directory.join("ran").exists()
+    }
+
     /// A `PATH` of the stand-in and nothing else the app could need.
     fn path(&self) -> String {
         format!("{}:/usr/bin:/bin", self.directory.display())
     }
+
+    /// Write an install receipt under the stub's own home, as `install.sh`
+    /// does: the lines are written verbatim, and only the `binary` line for
+    /// `whirl` is the command the app must find.
+    fn write_receipt(&self, lines: &[&str]) {
+        let receipt = self
+            .home
+            .join("Library/Application Support/whirl-ui/install.receipt");
+        std::fs::create_dir_all(receipt.parent().expect("the receipt's directory"))
+            .expect("the receipt's directory");
+        std::fs::write(&receipt, lines.join("\n") + "\n").expect("the receipt");
+    }
 }
 
 /// Run the app with the stand-in on `PATH`.
+///
+/// The search's inputs are all controlled here, so no part of the machine leaks
+/// in: `HOME` is the stub's own, `WHIRL_PREFIX` and `WHIRL_UI_RECEIPT` are
+/// removed unless the test passes one, and `PATH` is the stub's by default.
+/// A test overrides any of them by name.
 fn app(stub: &Stub, env: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_whirl-ui"));
     command.args(args);
     command.env("PATH", stub.path());
+    command.env("HOME", &stub.home);
     command.env("WHIRL_STUB_LOG", &stub.log);
+    command.env_remove("WHIRL_PREFIX");
+    command.env_remove("WHIRL_UI_RECEIPT");
     for (name, value) in env {
         command.env(name, value);
     }
@@ -174,22 +231,69 @@ fn a_refusal_is_shown_as_the_daemon_said_it() {
 }
 
 #[test]
-fn an_older_daemon_that_does_not_know_the_verb_is_quoted_rather_than_worked_around() {
-    // Exit 3 is what the CLI's usage error uses, which is what an older daemon
-    // answers with. The words are shown and no other route is taken.
+fn a_binary_that_does_not_know_daemon_is_named_with_its_own_version() {
+    // An older whirl is found, run, and answers with its usage text (exit 3).
+    // The message must name the binary that answered and the version it
+    // reports, and must not claim the command is missing.
     let stub = Stub::new("older");
-    let words = "whirl: daemon is not a command, or it has the wrong number of arguments";
+    let usage = "whirl: daemon is not a command, or it has the wrong number of arguments";
     let older = app(
         &stub,
         &[
             ("WHIRL_STUB_STATUS_CODE", "3"),
-            ("WHIRL_STUB_STATUS_WORDS", words),
+            ("WHIRL_STUB_STATUS_WORDS", usage),
+            ("WHIRL_STUB_VERSION", "whirl 0.1.0"),
         ],
         &["--daemon", "status"],
     );
     assert_eq!(older.status.code(), Some(3), "{}", stdout_of(&older));
-    assert_eq!(stderr_of(&older).trim(), words);
-    assert_eq!(stub.calls(), vec!["daemon status"]);
+    let message = stderr_of(&older);
+    assert!(
+        message.contains(&stub.command().display().to_string()),
+        "the binary is named: {message}"
+    );
+    assert!(
+        message.contains("whirl 0.1.0"),
+        "the version is named: {message}"
+    );
+    assert!(
+        message.contains("needs a daemon that has the `daemon` verb"),
+        "{message}"
+    );
+    assert!(
+        message.contains(usage),
+        "the CLI's own words stay: {message}"
+    );
+    assert!(!message.contains("no whirl was found"), "{message}");
+    assert_eq!(stub.calls(), vec!["daemon status", "--version"]);
+}
+
+#[test]
+fn a_binary_that_cannot_name_a_version_is_still_named_and_not_called_missing() {
+    // The build from before `--version` exists: the flag answers nothing, and
+    // that silence is the evidence of an old binary rather than a missing one.
+    let stub = Stub::new("no-version");
+    let usage = "whirl: unrecognized subcommand 'daemon'";
+    let older = app(
+        &stub,
+        &[
+            ("WHIRL_STUB_STATUS_CODE", "3"),
+            ("WHIRL_STUB_STATUS_WORDS", usage),
+        ],
+        &["--daemon", "status"],
+    );
+    assert_eq!(older.status.code(), Some(3), "{}", stdout_of(&older));
+    let message = stderr_of(&older);
+    assert!(
+        message.contains(&stub.command().display().to_string()),
+        "the binary is named: {message}"
+    );
+    assert!(message.contains("reports no version"), "{message}");
+    assert!(
+        message.contains("needs a daemon that has the `daemon` verb"),
+        "{message}"
+    );
+    assert!(!message.contains("no whirl was found"), "{message}");
 }
 
 #[test]
@@ -209,22 +313,76 @@ fn a_daemon_that_cannot_be_reached_is_exit_two() {
 }
 
 #[test]
-fn a_missing_command_is_said_rather_than_replaced() {
-    // No `whirl` on `PATH` at all: the app says so and does not reach for
-    // another route.
-    let directory = std::env::temp_dir().join(format!("whirlui-empty-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).expect("a scratch directory");
-    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
-        .args(["--daemon", "start"])
-        .env("PATH", directory.display().to_string())
-        .output()
-        .expect("the app runs");
-    assert_eq!(output.status.code(), Some(3), "{}", stdout_of(&output));
-    assert!(
-        stderr_of(&output).contains("whirl is not on PATH"),
-        "{}",
-        stderr_of(&output)
+fn the_receipt_binary_is_run_even_when_it_is_not_on_path() {
+    // The bug this pins: `install.sh` puts the daemon in `~/.local/bin`, a GUI
+    // inherits launchd's `PATH` without it, and the receipt is the installer's
+    // own record of where the daemon went. The app must run that binary, and a
+    // `PATH` that cannot see it must not matter.
+    let stub = Stub::new("receipt");
+    stub.write_receipt(&[&format!("binary {}", stub.command().display())]);
+    let empty = stub.home.join("empty-path");
+    std::fs::create_dir_all(&empty).expect("an empty PATH directory");
+    let output = app(
+        &stub,
+        &[("PATH", empty.to_str().expect("a utf-8 path"))],
+        &["--daemon", "status"],
     );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert_eq!(
+        stdout_of(&output).trim(),
+        "status: com.guruor.whirl running"
+    );
+    assert_eq!(stub.calls(), vec!["daemon status"]);
+}
+
+#[test]
+fn the_receipts_whirl_wins_over_a_different_one_earlier_on_path() {
+    // Two copies exist: one on `PATH`, and the one the installer recorded. The
+    // receipt names the daemon the installer placed, and that is the one the
+    // app runs, whatever `PATH` would have answered with.
+    let earlier = Stub::new("earlier");
+    let installed = Stub::new("installed");
+    earlier.write_receipt(&[&format!("binary {}", installed.command().display())]);
+    let output = app(&earlier, &[], &["--daemon", "status"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert!(
+        installed.ran(),
+        "the receipt's binary ran, and the one on PATH did not"
+    );
+    assert!(!earlier.ran(), "the copy earlier on PATH was not used");
+}
+
+#[test]
+fn a_command_that_is_nowhere_the_app_looks_names_every_place_it_looked() {
+    // A receipt whose binary was removed, no prefix, no /usr/local/bin and an
+    // empty PATH: nothing to run, and the message must name every place that
+    // was looked at and say how to get a daemon. It may not say "not on PATH",
+    // which is the wrong diagnosis for a GUI app.
+    let stub = Stub::new("missing");
+    stub.write_receipt(&["binary /nonexistent/whirl"]);
+    let empty = stub.home.join("empty-path");
+    std::fs::create_dir_all(&empty).expect("an empty PATH directory");
+    let output = app(
+        &stub,
+        &[("PATH", empty.to_str().expect("a utf-8 path"))],
+        &["--daemon", "start"],
+    );
+    assert_eq!(output.status.code(), Some(3), "{}", stdout_of(&output));
+    let message = stderr_of(&output);
+    assert!(message.contains("no whirl was found"), "{message}");
+    assert!(message.contains("the install receipt"), "{message}");
+    assert!(
+        message.contains("~/.local/bin/whirl"),
+        "where install.sh puts it: {message}"
+    );
+    assert!(message.contains("/usr/local/bin/whirl"), "{message}");
+    assert!(message.contains("whirl on PATH"), "{message}");
+    assert!(
+        message.contains("install.sh"),
+        "how to install one: {message}"
+    );
+    // Nothing was started, because there was nothing to start.
+    assert!(stub.calls().is_empty(), "{:?}", stub.calls());
 }
 
 #[test]
