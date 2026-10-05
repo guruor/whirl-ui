@@ -16,6 +16,35 @@ The tray is **macOS first**. macOS-only code is gated behind `#[cfg(target_os = 
 Linux and Windows builds compile the same workspace and stay green while those platforms are
 unfinished.
 
+## Install
+
+One command installs the daemon and the app, and reuses a daemon that is already there. It downloads
+two archives, checks each against the sha256 published beside it, and writes nothing until both checks
+pass. It uses no root and asks no question. Read it first:
+
+    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh
+    less install.sh
+    sh install.sh
+
+The same thing as one line, for anyone who has read it and trusts it:
+
+    curl -fsSL https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh | sh
+
+The daemon goes into `~/.local/bin` and `Whirl.app` into `/Applications`, which is outside your home:
+that one write is the only step macOS may ask you to authorize, and the script prints what may be asked
+and why rather than driving or dismissing that dialog. Whirl is not notarized, so its first launch may
+report that macOS cannot check it: open it once from Applications and allow it under
+System Settings > Privacy & Security if asked.
+
+The script prints what it installed, what it skipped and why, and the one command that undoes it. What
+it installed is recorded in a receipt (`WHIRL_UI_RECEIPT`, by default
+`~/Library/Application Support/whirl-ui/install.receipt`), and `uninstall.sh` removes the paths in that
+receipt and nothing else: a daemon or app that was already here was reused, not installed, and both
+scripts leave it alone. `uninstall.sh` never kills a process it did not start - it stops the daemon
+only through whirl's own command - and it names what it deliberately leaves alone: the daemon's config,
+state, cache and log. The daemon's own login unit is whirl's to install and whirl's to remove, so
+neither script writes a unit file.
+
 ## Layout
 
     crates/whirlui-client/   the protocol client (library)
@@ -47,6 +76,12 @@ terminal, in the daemon's own words rather than in a format invented here:
     cargo run -- --dump-config-check   # the effective plan the daemon adopted
     cargo run -- --dump-settings       # what the settings window shows, as text
     cargo run -- --screenshot shot.png # run the window, write it to a PNG, and exit
+    cargo run -- --login-item status   # the app's own login item, as macOS reports it
+
+`--login-item` takes `status`, `register` or `unregister`, and every verb ends by printing the status, so
+a before and an after are the same two lines. It is about the *app's own bundle*, which is what macOS
+registers a login item for: from `Whirl.app` it registers that app, and from a bare binary it refuses and
+names the executable it looked at. `scripts/make-bundle.sh` is what writes `Whirl.app`.
 
 The dump modes exit 0 on success, 1 if the daemon refused, 2 if it is unreachable and 3 if the command
 line cannot work. `--dump-settings` prints its three panes with no daemon too, where each one renders
@@ -65,6 +100,10 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
     docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
     docs/design.md        the visual language, and what each element the design draws would cost in config
     docs/installation.md  both install routes step by step: one command, and the same work by hand
+
+The release bundle is built by hand and by CI on a tag, from the same script:
+`scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
+downloaded copy is quarantined and its first launch needs the step named beside the download.
 
 ## License
 

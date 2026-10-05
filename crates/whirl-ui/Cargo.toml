@@ -41,13 +41,14 @@ png = "0.17"
 # `whirl-core`'s, on the exact bytes about to land (see `config_file.rs`).
 serde_json = { version = "1", features = ["preserve_order"] }
 
-# The tray itself is macOS-only, and its two crates are declared that way rather
-# than merely cfg-gated in the code: a target-specific dependency keeps them out
-# of the Linux and Windows builds entirely. `tray-icon` is the status item and
-# its menu; `winit` is here for one call that eframe does not surface: the macOS
-# activation policy (see `tray.rs`), which is what keeps the app out of the
-# Dock. It is the same 0.30 line eframe itself depends on, so it is one crate
-# and not two.
+# Everything below is macOS-only, and every crate here is declared that way rather
+# than merely cfg-gated in the code: a target-specific dependency keeps them out of
+# the Linux and Windows builds entirely.
+#
+# The tray. `tray-icon` is the status item and its menu; `winit` is here for one
+# call that eframe does not surface: the macOS activation policy (see `tray.rs`),
+# which is what keeps the app out of the Dock. It is the same 0.30 line eframe
+# itself depends on, so it is one crate and not two.
 #
 # The `objc2` bindings are here for the item's accessible name. `tray-icon` sets
 # the tooltip but exposes no call for the accessibility label, and a status
@@ -64,4 +65,25 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSStatusBarButton",
     "NSStatusItem",
 ] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }
+# `NSBundle` is here for one question the login item answers before it registers
+# anything: is this executable inside an app bundle at all, and which one. Without
+# a bundle identifier there is nothing for macOS to register, and saying so is
+# better than registering the directory the binary happens to sit in. `NSString`
+# is the tray's, already used for the accessible name.
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "NSBundle",
+    "NSError",
+    "NSString",
+] }
+# The app's own login item. `SMAppService.mainApp` is the API for an app's own
+# bundle (macOS 13+), and it is the mechanism the login item is registered with:
+# the bundle registers itself, so the Login Items pane has a name to show, which
+# is `CFBundleName` in the Info.plist `scripts/make-bundle.sh` writes. Default
+# features are off because the crate's default set pulls in block2,
+# CoreFoundation and Security for APIs this app never calls.
+objc2-service-management = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "SMAppService",
+    "objc2",
+    "objc2-foundation",
+] }
