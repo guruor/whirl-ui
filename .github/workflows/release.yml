@@ -21,18 +21,26 @@ name: release
 # and `main` having moved ahead of the tag since it was cut (the tagged commit is
 # still in `main`'s history, so the release is still the release that commit
 # describes).
+#
+# The second gate is about the file a reader is told to run rather than about history.
+# `install.sh` names the two releases it installs as hand-kept defaults of its own, and
+# nothing compared them with the tag until this gate existed. v0.2.1 was tagged with both
+# of them still reading 0.2.0: the documented route installed the app before this one, and
+# the daemon with it, while the release page, the archive and the checksum all said 0.2.1.
+# `pin` runs that comparison against the tag, and `bundle` waits behind it too, so a
+# release whose script points at another release publishes nothing.
 
 on:
   push:
     tags: ['v*']
   # The same artifact, on a tag that does not exist yet, for a run that has to be
-  # repeatable before the release is cut. The guard below applies to this trigger
-  # too, so a rehearsal run from a branch that does not release still publishes
-  # nothing.
+  # repeatable before the release is cut. The gates below apply to this trigger too,
+  # and `pin` needs the version typed here, so a rehearsal names the release it is
+  # rehearsing rather than taking what the checkout happens to carry.
   workflow_dispatch:
     inputs:
       version:
-        description: the version to build and release, as the tag spells it (v0.2.0)
+        description: the version to build and release, as the tag spells it (v0.2.1)
         required: true
 
 permissions:
@@ -98,10 +106,38 @@ jobs:
           echo "::error::$TAG is not on main, so it is not a release. Nothing was built and no release will be published. A release is a tag on main: delete this tag, get the commit onto main, and tag main's tip."
           exit 1
 
+  # The gate about the script rather than about history. It reads one file out of the
+  # checkout of the ref this run is for, so it needs no depth and nothing built: the
+  # comparison is `scripts/check-release-pins.sh`, which fails when the two defaults
+  # `install.sh` carries do not name this tag.
+  pin:
+    name: pin (${{ github.ref_name }} install.sh)
+    runs-on: ubuntu-latest
+    needs: [guard]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Refuse a release whose install.sh installs another release
+        shell: bash
+        env:
+          # The version reaches this step the way it reaches `bundle`: from the tag on a
+          # push, and from the input on a dispatch. No event payload is spliced into a
+          # `run:` step.
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          TYPED: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "$EVENT" = "push" ]; then
+            version="$TAG"
+          else
+            version="$TYPED"
+          fi
+          scripts/check-release-pins.sh "$version"
+
   bundle:
     name: bundle (macos-latest)
     runs-on: macos-latest
-    needs: [guard]
+    needs: [guard, pin]
     steps:
       - uses: actions/checkout@v5
       - name: Install the pinned toolchain and its components

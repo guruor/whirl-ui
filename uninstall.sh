@@ -109,8 +109,27 @@ fi
 whirl_bin=$(record_of binary | grep '/whirl$' | head -1 || true)
 if [ "$(record_of unit | head -1)" = delegated ]; then
     if [ -n "$whirl_bin" ] && [ -x "$whirl_bin" ]; then
+        # The verb is read from whirl's own usage rather than assumed, for the reason
+        # install.sh reads it: the released v0.2 CLI lists `daemon uninstall`, and the
+        # notes of whirl v0.1's time describe a `service` step the CLI never had. Asking
+        # for a verb the binary does not have leaves the login unit installed and the
+        # daemon running, while this script reports that it asked.
+        if "$whirl_bin" help 2>/dev/null | grep -q '^  daemon uninstall'; then
+            unit_command=daemon
+        elif "$whirl_bin" help 2>/dev/null | grep -q '^  service uninstall'; then
+            unit_command=service
+        else
+            unit_command=
+        fi
         printf "unit       whirl owns the daemon's login item; asking whirl to remove it:\n"
-        "$whirl_bin" service uninstall || true
+        if [ -n "$unit_command" ]; then
+            # Two words, and the split is the point: `daemon uninstall` is two arguments.
+            # shellcheck disable=SC2086
+            "$whirl_bin" $unit_command uninstall || true
+        else
+            printf "unit       this whirl binary lists no verb that removes it; the login item is\n"
+            printf '           left in place, and whirl\047s own command is what removes it\n'
+        fi
         printf "unit       that is what whirl's own command did with its own login item, above.\n"
         printf '           Anything it stopped, it stopped itself; this script kills nothing.\n'
     else

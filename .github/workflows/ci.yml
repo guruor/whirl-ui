@@ -1,12 +1,17 @@
 name: ci
 
-# fmt, clippy and test. Clippy and test run on the three operating systems the
+# fmt, clippy, test, and the install scripts. Clippy and test run on the three operating
+# systems the
 # daemon targets. The tray is macOS-first: macOS-only code is gated behind
 # `#[cfg(target_os = "macos")]`, so the Linux and Windows legs compile the same
 # workspace and stay green.
 #
 # The toolchain comes from `rust-toolchain.toml`, so `rustup show` installs the
 # pinned channel and its rustfmt and clippy components before anything runs.
+#
+# The install job needs no toolchain: the scripts are `sh` and their run builds stand-in
+# binaries and archives in a throwaway directory. It runs on macOS because install.sh is
+# macOS-only, the login unit it asks whirl for being macOS's.
 
 on:
   push:
@@ -50,6 +55,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # `scripts/test-install.sh`, and nothing ran it before. So the defect it now covers at
+  # scenario 5 reached a tag: the daemon's login unit was asked for by a verb no released
+  # CLI has, which left the daemon out of login while install.sh reported whirl's silence
+  # as the reason. The harness is offline by design and touches nothing outside a throwaway
+  # directory, so it costs a checkout and a few seconds. (`scripts/check-release-pins.sh`
+  # is the other script nothing ran; it belongs to the release rather than to a push, and
+  # `.github/workflows/release.yml` runs it.)
+  install:
+    name: install (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: sh scripts/test-install.sh
+        run: sh scripts/test-install.sh
 
   test:
     name: test (${{ matrix.os }})
