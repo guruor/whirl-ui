@@ -45,7 +45,7 @@
 # "download, read, run". Piping it into a shell is offered beside that route, never
 # instead of it:
 #
-#   curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.1/install.sh
+#   curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.2/install.sh
 #   less install.sh
 #   sh install.sh
 #
@@ -53,7 +53,7 @@
 # the same script can install a build that is not the published one, and so an
 # acceptance run can install into a throwaway prefix with no network.
 #
-#   WHIRL_UI_VERSION   0.2.1               the app release; the tag is v0.2.1
+#   WHIRL_UI_VERSION   0.2.2               the app release; the tag is v0.2.2
 #   WHIRL_UI_BASE      the release download where Whirl-<version>.zip lives
 #   WHIRL_UI_ARCHIVE   <path or URL>       use this archive, skip the download
 #   WHIRL_UI_SHA256    <path or URL>       its checksum; default <archive>.sha256
@@ -61,7 +61,7 @@
 #   WHIRL_UI_RECEIPT   <path>              where the record of what was installed is
 #                                          kept, default ~/Library/Application
 #                                          Support/whirl-ui/install.receipt
-#   WHIRL_VERSION      v0.2.1              the daemon release
+#   WHIRL_VERSION      v0.2.2              the daemon release
 #   WHIRL_BASE         the release download where the daemon archive lives
 #   WHIRL_ARCHIVE      <path or URL>       use this archive, skip the download
 #   WHIRL_SHA256       <path or URL>       its checksum; default <archive>.sha256
@@ -105,12 +105,12 @@ Exit codes: 0 ok; 1 refused (platform, download, checksum, unwritable destinatio
 authorization this script cannot ask for, and nothing was installed.
 
 Overrides (optional; the defaults are the published release):
-  WHIRL_UI_VERSION   0.2.1
+  WHIRL_UI_VERSION   0.2.2
   WHIRL_UI_ARCHIVE   path or URL of Whirl-<version>.zip
   WHIRL_UI_SHA256    path or URL of its checksum
   WHIRL_UI_PREFIX    /Applications
   WHIRL_UI_RECEIPT   where the record of what was installed is kept
-  WHIRL_VERSION      v0.2.1
+  WHIRL_VERSION      v0.2.2
   WHIRL_ARCHIVE      path or URL of the daemon archive
   WHIRL_SHA256       path or URL of its checksum
   WHIRL_PREFIX       ~/.local/bin
@@ -159,8 +159,8 @@ esac
 # the defaults, and the overrides
 # ---------------------------------------------------------------------------
 
-WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.1}
-WHIRL_VERSION=${WHIRL_VERSION:-v0.2.1}
+WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.2}
+WHIRL_VERSION=${WHIRL_VERSION:-v0.2.2}
 
 ui_prefix=${WHIRL_UI_PREFIX:-/Applications}
 daemon_prefix=${WHIRL_PREFIX:-$HOME/.local/bin}

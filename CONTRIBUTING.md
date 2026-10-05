@@ -202,13 +202,20 @@ it at another keychain, for a throwaway one in a test.
 A tag is the release. Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the bundle
 from that tag and attaches `dist/*.zip` and `dist/*.zip.sha256` to a GitHub release for it.
 
-The workflow's first job, `guard`, fails unless the tagged commit is an ancestor of `origin/main`, and
-`bundle` names `guard` in `needs:`: a tag pushed anywhere else builds nothing and publishes nothing.
-Ancestry covers both legitimate cases, a tag at `main`'s tip and `main` having moved ahead of the tag
-since it was cut.
+The workflow's jobs run in order. `guard` fails unless the tagged commit is an ancestor of
+`origin/main`; `pin` fails unless the `install.sh` at that tag installs that release; `bundle` names
+both of them in `needs:`, so a tag pushed anywhere else, or a script that points at another release,
+builds nothing and publishes nothing. Ancestry covers both legitimate cases, a tag at `main`'s tip and
+`main` having moved ahead of the tag since it was cut.
+
+Cutting a release, in order: bump `WHIRL_UI_VERSION` and `WHIRL_VERSION` in `install.sh` to the new
+pair, bump `version` in `Cargo.toml` and the `whirl-ui` and `whirlui-client` entries in `Cargo.lock`,
+write `docs/releases/<version>.md`, land all of it on `main`, then push the tag on `main`'s tip. The
+pin bump is hand-kept, which is why the `pin` job exists: v0.2.1 was tagged with both defaults still
+reading 0.2.0, and the route its notes document installed 0.2.0.
 
 The release's own words are `docs/releases/<version>.md`; the GitHub release page points at that file
-rather than carrying prose of its own. `docs/releases/v0.1.0.md` is the one that exists today.
+rather than carrying prose of its own, and `docs/releases/` is the list of them.
 
 ## A first pull request
 
