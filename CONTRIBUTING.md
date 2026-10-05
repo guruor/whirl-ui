@@ -208,11 +208,14 @@ both of them in `needs:`, so a tag pushed anywhere else, or a script that points
 builds nothing and publishes nothing. Ancestry covers both legitimate cases, a tag at `main`'s tip and
 `main` having moved ahead of the tag since it was cut.
 
-Cutting a release, in order: bump `WHIRL_UI_VERSION` and `WHIRL_VERSION` in `install.sh` to the new
-pair, bump `version` in `Cargo.toml` and the `whirl-ui` and `whirlui-client` entries in `Cargo.lock`,
-write `docs/releases/<version>.md`, land all of it on `main`, then push the tag on `main`'s tip. The
-pin bump is hand-kept, which is why the `pin` job exists: v0.2.1 was tagged with both defaults still
-reading 0.2.0, and the route its notes document installed 0.2.0.
+Cutting a release, in order: bump `WHIRL_UI_VERSION` in `install.sh` to the new version, bump
+`version` in `Cargo.toml` and the `whirl-ui` and `whirlui-client` entries in `Cargo.lock`, write
+`docs/releases/<version>.md`, land all of it on `main`, then push the tag on `main`'s tip.
+`WHIRL_VERSION` is the daemon's pin and moves only when the daemon has released: the two repositories
+are released independently, so it normally trails the tag, and the `pin` job resolves it rather than
+comparing it. Both defaults are hand-kept, which is why that job exists. v0.2.1 was tagged with both
+still reading 0.2.0, and the route its notes document installed 0.2.0. v0.2.2 was first cut with the
+daemon pin bumped to match the tag, which named a daemon release that does not exist.
 
 The release's own words are `docs/releases/<version>.md`; the GitHub release page points at that file
 rather than carrying prose of its own, and `docs/releases/` is the list of them.

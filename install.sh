@@ -61,7 +61,7 @@
 #   WHIRL_UI_RECEIPT   <path>              where the record of what was installed is
 #                                          kept, default ~/Library/Application
 #                                          Support/whirl-ui/install.receipt
-#   WHIRL_VERSION      v0.2.2              the daemon release
+#   WHIRL_VERSION      v0.2.1              the daemon release
 #   WHIRL_BASE         the release download where the daemon archive lives
 #   WHIRL_ARCHIVE      <path or URL>       use this archive, skip the download
 #   WHIRL_SHA256       <path or URL>       its checksum; default <archive>.sha256
@@ -110,7 +110,7 @@ Overrides (optional; the defaults are the published release):
   WHIRL_UI_SHA256    path or URL of its checksum
   WHIRL_UI_PREFIX    /Applications
   WHIRL_UI_RECEIPT   where the record of what was installed is kept
-  WHIRL_VERSION      v0.2.2
+  WHIRL_VERSION      v0.2.1
   WHIRL_ARCHIVE      path or URL of the daemon archive
   WHIRL_SHA256       path or URL of its checksum
   WHIRL_PREFIX       ~/.local/bin
@@ -160,7 +160,7 @@ esac
 # ---------------------------------------------------------------------------
 
 WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.2}
-WHIRL_VERSION=${WHIRL_VERSION:-v0.2.2}
+WHIRL_VERSION=${WHIRL_VERSION:-v0.2.1}
 
 ui_prefix=${WHIRL_UI_PREFIX:-/Applications}
 daemon_prefix=${WHIRL_PREFIX:-$HOME/.local/bin}
