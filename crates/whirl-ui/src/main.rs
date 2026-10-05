@@ -31,6 +31,7 @@ mod state;
 mod theme;
 #[cfg(target_os = "macos")]
 mod tray;
+mod window;
 
 use std::env;
 use std::io::Read;
@@ -695,23 +696,54 @@ mod tests {
         assert_eq!(Snap::parse(""), None);
     }
 
-    /// The app is a menu bar item with a dialog, not a windowed application: it
-    /// asks macOS for an accessory activation policy and never for a regular one,
-    /// so it takes no Dock tile (M1 criterion 5). A Dock tile is a different
-    /// product, and this is the assertion that a restyle did not introduce one.
+    /// The app is a menu bar item with a dialog, and the Dock tile belongs to
+    /// the window.
     ///
-    /// It reads the crate's own sources because the property has no runtime
-    /// surface a headless test can reach: the policy is decided once, by a winit
-    /// builder, before a window exists. The needle is assembled rather than
-    /// written out, so the assertion is not satisfied by its own text.
+    /// The rule is conditional, and it changed. The app used to ask for the
+    /// accessory policy and never for a regular one, on the reading that a Dock
+    /// tile is a different product. That reading got the second half right and
+    /// the first half wrong: an agent app's windows are not managed by the
+    /// window manager, so the settings window could not be raised once another
+    /// app was over it, and the app had no Cmd+Tab entry to be switched back to.
+    /// The window was on screen and unfindable, which is the defect this
+    /// asserts against. So the policy follows the window -- accessory while none
+    /// is open (M1 criterion 5's no-permanent-Dock-tile rule, which is exactly
+    /// what the old assertion was protecting and it is kept), regular while one
+    /// is -- and this test states both halves rather than the accidental first
+    /// one.
+    ///
+    /// It reads the crate's own sources for the second half because that half
+    /// has no runtime surface a headless test can reach: the policy is applied
+    /// from a pass, against a window server a test has not got. The needles are
+    /// assembled rather than written out, so an assertion is not satisfied by
+    /// its own text.
     #[test]
-    fn the_app_still_asks_for_no_dock_tile() {
-        let regular = ["ActivationPolicy", "::", "Regular"].concat();
+    fn the_app_is_a_regular_app_only_while_a_window_is_open() {
+        // The rule itself, both directions, from the value the two call sites
+        // share.
+        assert_eq!(
+            window::policy_for(false),
+            window::Policy::Accessory,
+            "no window: no Dock tile, and nothing in the switcher"
+        );
+        assert_eq!(
+            window::policy_for(true),
+            window::Policy::Regular,
+            "a window on screen: a Dock tile, and an entry in the switcher"
+        );
+
+        // The app still starts as an agent: the bundle's `LSUIElement` (see
+        // scripts/make-bundle.sh) and the policy the event loop is built with.
         let tray = include_str!("tray.rs");
         assert!(
             tray.contains("ActivationPolicy::Accessory"),
-            "the app asks macOS for the accessory policy"
+            "the app asks macOS for the accessory policy at launch"
         );
+
+        // And the only place that asks for a regular policy is the window's own
+        // open and close path, which is `window.rs`: nothing else may give the
+        // app a permanent Dock tile.
+        let regular = ["ActivationPolicy", "::", "Regular"].concat();
         for (name, source) in [
             ("main.rs", include_str!("main.rs")),
             ("app.rs", include_str!("app.rs")),
@@ -719,8 +751,13 @@ mod tests {
         ] {
             assert!(
                 !source.contains(&regular),
-                "{name} asks for a regular activation policy, which is what gives the app a Dock tile"
+                "{name} asks for a regular activation policy, which is what gives the app a \
+                 Dock tile outside the window's own lifetime"
             );
         }
+        assert!(
+            include_str!("window.rs").contains(&regular),
+            "the window's own path is the one place that asks for a regular activation policy"
+        );
     }
 }
