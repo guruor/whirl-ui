@@ -63,6 +63,15 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # an activation policy once, from the event loop builder, and has no call for a
 # second -- and `NSWindow` is what carries `orderFront`, `makeKeyAndOrderFront`
 # and `deminiaturize`.
+#
+# The folder panel is the third use of the same bindings, and the reason its
+# features are listed below. `settings::ask_the_panel` is one call to
+# `NSOpenPanel`, and these features are the classes it stands on: `NSOpenPanel`
+# and its `NSSavePanel`/`NSPanel`/`NSWindow`/`NSResponder` superclasses, plus
+# `NSApplication`, which is what `runModal`'s own gate names. No new framework
+# arrives with any of them: AppKit is already linked, through `tray-icon` and
+# through eframe's winit, so this is one more call into a framework already on
+# the machine rather than a second copy of the platform bindings.
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.26", default-features = false }
 winit = { version = "0.30", default-features = false }
@@ -70,7 +79,11 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSAccessibilityProtocols",
     "NSApplication",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSResponder",
     "NSRunningApplication",
+    "NSSavePanel",
     "NSStatusBarButton",
     "NSStatusItem",
     "NSWindow",

@@ -515,6 +515,110 @@ pub struct Picker {
     pub problem: Option<String>,
 }
 
+/// What the platform's folder panel answered.
+///
+/// The window's two folder controls go through [`Settings::choose_folder`], and
+/// this is the panel's whole vocabulary: a folder, a dismissal, or no panel to
+/// show. The drawn browser ([`Picker`]) is the fallback for the last of the
+/// three, so a machine without AppKit, a run with no window to put a modal panel
+/// in, or a panel that would not present all reach the same control the app
+/// always had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        reason = "the two answers a panel can give are only built by the macOS `NSOpenPanel` call (`ask_the_panel`); off macOS there is no panel, so nothing outside this module's test constructs them, and use inside `#[cfg(test)]` does not count in a non-test build"
+    )
+)]
+pub enum PanelAnswer {
+    /// The person chose this folder.
+    Chosen(PathBuf),
+    /// The person dismissed the panel. Nothing is written.
+    Cancelled,
+    /// There was no panel to show: the platform has none, or none could be
+    /// presented. The drawn browser is the fallback.
+    Unavailable,
+}
+
+/// The platform's folder panel, asked for one folder.
+///
+/// One question, one answer. The AppKit panel ([`SystemPanel`]) is the only
+/// implementation that ships; it is behind a trait so a test can answer without
+/// opening anything and still drive the write a click drives
+/// ([`Settings::choose_folder`]).
+pub trait FolderPanel {
+    /// Ask the person for a folder.
+    fn ask(&self) -> PanelAnswer;
+}
+
+/// The panel this app ships: `NSOpenPanel` on macOS, and no panel elsewhere.
+///
+/// On a platform without AppKit the answer is [`PanelAnswer::Unavailable`], so a
+/// click reaches the drawn browser exactly as it always did. The Linux and
+/// Windows CI legs compile that arm rather than the AppKit one.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemPanel;
+
+impl FolderPanel for SystemPanel {
+    fn ask(&self) -> PanelAnswer {
+        ask_the_panel()
+    }
+}
+
+/// Ask the platform for a folder.
+///
+/// The one AppKit call in this app: an `NSOpenPanel` that offers directories and
+/// no files, lets one be created, takes one choice, and is worded for a folder of
+/// pictures. It runs modally on the main thread, which is the thread the click is
+/// on, and it answers with the folder the person picked, a dismissal, or
+/// [`PanelAnswer::Unavailable`] when there is no main-thread marker to present a
+/// panel with (or the run came back neither OK nor Cancel), which is where the
+/// drawn browser takes over.
+#[cfg(target_os = "macos")]
+fn ask_the_panel() -> PanelAnswer {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::NSString;
+
+    // A marker off the main thread means this is not a run that can present a
+    // modal panel, and the drawn browser is the way in.
+    let Some(mtm) = MainThreadMarker::new() else {
+        return PanelAnswer::Unavailable;
+    };
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseDirectories(true);
+    panel.setCanChooseFiles(false);
+    panel.setCanCreateDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    panel.setPrompt(Some(&NSString::from_str("Choose")));
+    panel.setMessage(Some(&NSString::from_str("Choose a folder of pictures")));
+    // `runModal` answers `NSModalResponseOK` on a choice, `NSModalResponseCancel`
+    // on a dismissal, and `NSModalResponseAbort` when the panel could not be
+    // displayed. The three are compared rather than matched: the two constants
+    // are statics, and a static cannot stand as a match pattern.
+    let answer = panel.runModal();
+    if answer == NSModalResponseOK {
+        match panel.URL().and_then(|url| url.path()) {
+            Some(folder) => PanelAnswer::Chosen(PathBuf::from(folder.to_string())),
+            // OK with no folder behind it is not a choice this app can write.
+            None => PanelAnswer::Cancelled,
+        }
+    } else if answer == NSModalResponseCancel {
+        PanelAnswer::Cancelled
+    } else {
+        // `NSModalResponseAbort`: the panel failed to display, which is the
+        // fallback's case rather than a dismissal.
+        PanelAnswer::Unavailable
+    }
+}
+
+/// No AppKit here: the drawn browser is the way in.
+#[cfg(not(target_os = "macos"))]
+fn ask_the_panel() -> PanelAnswer {
+    PanelAnswer::Unavailable
+}
+
 /// What the last edit did, in the words of the control that made it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -892,7 +996,35 @@ impl Settings {
         }
     }
 
-    /// Open the folder chooser, for one source or for a new one.
+    /// Ask for a folder through `panel`, and write what the answer says.
+    ///
+    /// The whole of the `Add a folder…` and `Change…` controls: the platform's
+    /// panel is asked first, and its answer is a folder to write through the same
+    /// path the commands use (`add_folder` for a new source, `set_source_folder`
+    /// for an existing one), a dismissal that writes nothing, or no panel at all,
+    /// which is where the drawn browser ([`Settings::open_picker`]) takes over.
+    /// The AppKit panel is the only implementation that ships; a test hands its
+    /// own answer in and drives the same write without opening anything.
+    pub fn choose_folder(&mut self, for_source: Option<String>, panel: &dyn FolderPanel) {
+        match panel.ask() {
+            PanelAnswer::Chosen(folder) => {
+                let folder = folder.display().to_string();
+                match for_source {
+                    Some(id) => self.set_source_folder(&id, &folder),
+                    None => self.add_folder(&folder),
+                }
+            }
+            PanelAnswer::Cancelled => {}
+            PanelAnswer::Unavailable => self.open_picker(for_source),
+        }
+    }
+
+    /// Open the drawn browser, for one source or for a new one.
+    ///
+    /// The fallback for [`Settings::choose_folder`]: the way in when there is no
+    /// panel to ask (a machine without AppKit) or none could be presented. Its
+    /// clicks are the picker methods below, and it stays the documented behaviour
+    /// for those cases.
     pub fn open_picker(&mut self, for_source: Option<String>) {
         let start = for_source
             .as_ref()
@@ -1761,6 +1893,94 @@ mod tests {
             .as_ref()
             .map(|picker| picker.directory.canonicalize().expect("the folder"));
         assert_eq!(shown, Some(folder.canonicalize().expect("the folder")));
+    }
+
+    /// A panel that answers what a test tells it, without opening anything.
+    ///
+    /// The seam's whole point: the window asks a [`FolderPanel`], and a test can
+    /// be one.
+    struct Answering(PanelAnswer);
+
+    impl FolderPanel for Answering {
+        fn ask(&self) -> PanelAnswer {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn a_chosen_folder_lands_the_write_the_button_makes() {
+        // The panel is the way in now, and what it writes has to be the write the
+        // control already made: the same folder chosen through the panel and
+        // passed to `add_folder` must leave the same row and the same file.
+        let folder = "/tmp/My Pictures";
+        let (mut via_panel, panel_path) = window_from("choose-panel", CONFIG);
+        let (mut via_button, button_path) = window_from("choose-button", CONFIG);
+
+        via_panel.choose_folder(None, &Answering(PanelAnswer::Chosen(PathBuf::from(folder))));
+        via_button.add_folder(folder);
+
+        assert_eq!(
+            via_panel.sources.rows, via_button.sources.rows,
+            "the row the panel's choice produces"
+        );
+        assert!(
+            via_panel
+                .sources
+                .rows
+                .iter()
+                .any(|row| row.line().contains(folder)),
+            "{:?}",
+            via_panel.sources.rows
+        );
+        assert_eq!(
+            std::fs::read_to_string(&panel_path).expect("the file"),
+            std::fs::read_to_string(&button_path).expect("the file"),
+            "the file the panel's choice writes"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_panel_writes_nothing() {
+        let (mut settings, path) = window_from("choose-cancelled", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+        let rows = settings.sources.rows.clone();
+
+        settings.choose_folder(None, &Answering(PanelAnswer::Cancelled));
+
+        assert_eq!(
+            std::fs::read(&path).expect("the file"),
+            before,
+            "a cancellation wrote the file"
+        );
+        assert_eq!(settings.sources.rows, rows, "a cancellation changed a row");
+        assert!(
+            settings.sources.outcome.is_none(),
+            "a cancellation claimed an outcome: {:?}",
+            settings.sources.outcome
+        );
+    }
+
+    #[test]
+    fn a_panel_that_cannot_be_shown_falls_back_to_the_drawn_browser() {
+        // No AppKit, no GUI, or a panel that would not present: the click reaches
+        // the drawn browser the app always had, and it stays the documented
+        // behaviour for those runs (see `Settings::choose_folder`).
+        let (mut settings, path) = window_from("choose-fallback", CONFIG);
+        let before = std::fs::read(&path).expect("the file");
+
+        settings.choose_folder(None, &Answering(PanelAnswer::Unavailable));
+
+        assert!(settings.picker.is_some(), "the drawn browser did not open");
+        assert!(
+            settings.to_text().contains(PICKER_TITLE),
+            "{}",
+            settings.to_text()
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("the file"),
+            before,
+            "opening the fallback wrote the file"
+        );
     }
 
     #[test]

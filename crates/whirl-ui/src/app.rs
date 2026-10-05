@@ -38,7 +38,7 @@ use crate::settings::{
     self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE,
     COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES,
     PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, SUBTITLE,
-    Settings, Unit, WINDOW_TITLE,
+    Settings, SystemPanel, Unit, WINDOW_TITLE,
 };
 use crate::theme;
 
@@ -623,11 +623,11 @@ fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
     for click in clicks {
         match click {
             Click::Toggle(id, enabled) => settings.set_source_enabled(&id, enabled),
-            Click::Change(id) => settings.open_picker(Some(id)),
+            Click::Change(id) => settings.choose_folder(Some(id), &SystemPanel),
             Click::Key => settings.key.open = true,
             Click::ChangeUrl(id) => settings.edit_collection(&id),
             Click::Remove(id) => settings.remove_source(&id),
-            Click::AddFolder => settings.open_picker(None),
+            Click::AddFolder => settings.choose_folder(None, &SystemPanel),
             Click::AddWallhaven => settings.ask_for_collection(),
             Click::SaveKey => settings.save_key(),
             Click::CancelKey => settings.key.open = false,
@@ -853,11 +853,17 @@ fn about_pane(ui: &mut egui::Ui, settings: &mut Settings) {
     });
 }
 
-/// The folder chooser: the folders inside one folder, and the two ways out.
+/// The drawn folder browser: the folders inside one folder, and the two ways out.
 ///
 /// A folder is chosen from a list rather than typed, because a path typed into a
 /// window is a path the person has to know and spell, and the one thing this
 /// control is for is that they do not have to.
+///
+/// It is the fallback for the platform's own panel, not the primary control:
+/// `Add a folder…` and `Change…` ask `settings::SystemPanel` first, and this is
+/// what a run with no panel to show falls back to (see
+/// [`Settings::choose_folder`]). Its own clicks are the [`Click`] arms recorded
+/// below, and its wording and palette are unchanged.
 fn picker(ui: &mut egui::Ui, settings: &mut Settings) {
     let Some(showing) = settings.picker.clone() else {
         return;
