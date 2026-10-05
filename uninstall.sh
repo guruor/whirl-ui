@@ -2,12 +2,13 @@
 #
 # uninstall.sh: undo what install.sh put here, and nothing else.
 #
-# install.sh writes a receipt naming every path it installs - $WHIRL_UI_RECEIPT, default
-# ~/Library/Application Support/whirl-ui/install.receipt - and this script removes the
-# paths that receipt names. The receipt is the whole of the decision: a daemon or an app
-# that install.sh found already here is reused, printed as not touched, and never written
-# to the receipt, so this script leaves it alone and says so. That is where the two
-# scripts agree.
+# install.sh writes a receipt naming every path it is paired with - $WHIRL_UI_RECEIPT,
+# default ~/Library/Application Support/whirl-ui/install.receipt - and this script removes
+# the paths that receipt names. The receipt is the whole of the decision. The app and the
+# daemon are one install: the daemon's binaries are named even when install.sh reused the
+# daemon rather than installing it, so the two go together here. An app that install.sh
+# found already here is reused, printed as not touched, and never written to the receipt,
+# so this script leaves it alone and says so. That is where the two scripts agree.
 #
 # It never stops a process it did not start:
 #
