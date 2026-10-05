@@ -29,13 +29,13 @@ One command installs the daemon and the app, and reuses a daemon that is already
 two archives, checks each against the sha256 published beside it, and writes nothing until both checks
 pass. It uses no root and asks no question. Read it first:
 
-    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh
+    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.0/install.sh
     less install.sh
     sh install.sh
 
 The same thing as one line, for anyone who has read it and trusts it:
 
-    curl -fsSL https://raw.githubusercontent.com/guruor/whirl-ui/v0.1.0/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.0/install.sh | sh
 
 The daemon goes into `~/.local/bin` and `Whirl.app` into `/Applications`, which is outside your home:
 that one write is the only step macOS may ask you to authorize, and the script prints what may be asked
@@ -79,7 +79,7 @@ it is written to.
 - [`docs/installation.md`](docs/installation.md): both install routes, step by step.
 - [`docs/design.md`](docs/design.md): the visual language, and what each element the design draws would
   cost in config.
-- [`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md): what this build is, what its first launch needs,
+- [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md): what this build is, what its first launch needs,
   and what it does not do.
 - [whirl's docs](https://github.com/guruor/whirl/tree/main/docs): the daemon's own side of the socket,
   its architecture and its protocol.
