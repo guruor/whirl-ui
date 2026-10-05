@@ -4,18 +4,21 @@
 #
 # install.sh writes a receipt naming every path it is paired with - $WHIRL_UI_RECEIPT,
 # default ~/Library/Application Support/whirl-ui/install.receipt - and this script removes
-# the paths that receipt names. The receipt is the whole of the decision. The app and the
-# daemon are one install: the daemon's binaries are named even when install.sh reused the
-# daemon rather than installing it, so the two go together here. An app that install.sh
-# found already here is reused, printed as not touched, and never written to the receipt,
-# so this script leaves it alone and says so. That is where the two scripts agree.
+# the paths that receipt names. The receipt is the whole of the decision about which paths
+# are this install's. The app and the daemon are one install: the daemon's binaries are
+# named even when install.sh reused the daemon rather than installing it, so the two go
+# together here. An app that install.sh found already here is reused, printed as not
+# touched, and never written to the receipt, so this script leaves it alone and says so.
+# That is where the two scripts agree.
 #
 # It never stops a process it did not start:
 #
-#   the daemon   is stopped only through whirl's own command, and only when the receipt
-#                records that install.sh asked whirl to install its login unit. A daemon
-#                you started by hand keeps running: this script does not kill it, and
-#                prints that it did not.
+#   the daemon   is stopped only through whirl's own command, and only when the binary the
+#                login unit's ProgramArguments names is one this receipt owns; that command
+#                is asked before the binary is removed, because a unit left pointing at a
+#                program that is gone is retried by the supervisor at every login. A daemon
+#                you started by hand, or one whose unit points elsewhere, keeps running:
+#                this script does not kill it, and prints that it did not.
 #   Whirl.app    is never killed either. If Whirl is running from the bundle this receipt
 #                names, that bundle is left in place and the script says how to quit it,
 #                rather than force-quitting behind your back.
@@ -102,45 +105,60 @@ if [ -n "$app" ] && [ -d "$app" ]; then
     fi
 fi
 
-# The daemon's login unit is whirl's, and only whirl's own installer ever put it there. The
-# receipt says whether install.sh asked for that; when it did, this asks whirl's own
-# command to take it away again, and never removes a unit file itself. Asking first also
-# keeps the daemon's own stop path whirl's: no process is killed from here.
-whirl_bin=$(record_of binary | grep '/whirl$' | head -1 || true)
-if [ "$(record_of unit | head -1)" = delegated ]; then
+# The daemon's login unit is whirl's, and only whirl's own installer ever put it there.
+# The rule below is a correctness rule, not bookkeeping: the receipt names the paths this
+# install owns, and if one of them is the binary the unit's ProgramArguments names, that
+# binary is what the supervisor runs. Removing it first would leave a login item pointing
+# at a program that no longer exists, and the supervisor would retry that path at every
+# login. So the unit file is read, and whirl's own command is asked to take the unit away
+# while the binary it points at still exists.
+#
+# The comparison is the unit file and the receipt, never the receipt's `unit delegated`
+# line: that line records which run wrote the unit, and what matters here is what the unit
+# points at. It applies whichever run wrote the unit, this install's or another's. No unit
+# file is removed from here and no process is killed here: the unit is whirl's own.
+unit_plist=$HOME/Library/LaunchAgents/com.guruor.whirl.plist
+unit_program=
+if [ -f "$unit_plist" ]; then
+    unit_program=$(plutil -extract ProgramArguments.0 raw -o - "$unit_plist" 2>/dev/null || true)
+fi
+unit_owned=
+if [ -n "$unit_program" ]; then
+    unit_owned=$(record_of binary | grep -Fx -- "$unit_program" | head -1 || true)
+fi
+
+# `yes` when the unit points at a binary this receipt owns but whirl could not remove the
+# unit: the binary is then left in place rather than deleted out from under the unit.
+unit_left=no
+if [ -n "$unit_owned" ]; then
+    printf 'unit       the login item %s runs %s, which this receipt owns\n' \
+        "$unit_plist" "$unit_owned"
+    whirl_bin=$(record_of binary | grep '/whirl$' | head -1 || true)
+    if [ -z "$whirl_bin" ] || [ ! -x "$whirl_bin" ]; then
+        whirl_bin=$(command -v whirl 2>/dev/null || true)
+    fi
+    printf "           removing it through whirl's own command, before the binary goes:\n"
     if [ -n "$whirl_bin" ] && [ -x "$whirl_bin" ]; then
-        # The verb is read from whirl's own usage rather than assumed, for the reason
-        # install.sh reads it: the released v0.2 CLI lists `daemon uninstall`, and the
-        # notes of whirl v0.1's time describe a `service` step the CLI never had. Asking
-        # for a verb the binary does not have leaves the login unit installed and the
-        # daemon running, while this script reports that it asked.
-        if "$whirl_bin" help 2>/dev/null | grep -q '^  daemon uninstall'; then
-            unit_command=daemon
-        elif "$whirl_bin" help 2>/dev/null | grep -q '^  service uninstall'; then
-            unit_command=service
+        if "$whirl_bin" daemon uninstall; then
+            printf "unit       whirl's own command removed its login item, above. Anything it\n"
+            printf '           stopped, it stopped itself; this script kills nothing.\n'
         else
-            unit_command=
+            printf "unit       whirl's own command did not remove its login item (see above), so the\n"
+            printf '           login item still points at %s and that binary is left in place.\n' "$unit_owned"
+            printf '           Remove the unit yourself with `whirl daemon uninstall`.\n'
+            unit_left=yes
         fi
-        printf "unit       whirl owns the daemon's login item; asking whirl to remove it:\n"
-        if [ -n "$unit_command" ]; then
-            # Two words, and the split is the point: `daemon uninstall` is two arguments.
-            # shellcheck disable=SC2086
-            "$whirl_bin" $unit_command uninstall || true
-        else
-            printf "unit       this whirl binary lists no verb that removes it; the login item is\n"
-            printf '           left in place, and whirl\047s own command is what removes it\n'
-        fi
-        printf "unit       that is what whirl's own command did with its own login item, above.\n"
-        printf '           Anything it stopped, it stopped itself; this script kills nothing.\n'
     else
-        printf "unit       the receipt says whirl's login item is here, but whirl's own binary is\n"
-        printf '           gone; no unit file is removed from here, and none was\n'
+        printf 'unit       no whirl command is here to remove it, so the login item still points\n'
+        printf '           at %s and that binary is left in place. Remove the unit yourself\n' "$unit_owned"
+        printf '           with `whirl daemon uninstall`, or remove the unit file by hand.\n'
+        unit_left=yes
     fi
 else
-    printf 'daemon     not stopped: install.sh installed no login unit here and never started a\n'
-    printf "           daemon, so there is none of this install's to stop. A daemon you started\n"
-    printf "           yourself is still running; stop it with whirl's own command when you want\n"
-    printf '           it stopped\n'
+    printf 'daemon     not stopped: no login unit points at a binary this receipt owns, so\n'
+    printf '           there is none of this install to stop from here. A daemon you started\n'
+    printf '           yourself, or one whose unit points elsewhere, keeps running; stop it\n'
+    printf '           with whirl\047s own command when you want it stopped\n'
 fi
 
 # Every path the receipt names, and only those.
@@ -155,6 +173,11 @@ while IFS= read -r line; do
         *) continue ;;
     esac
     path=${line#* }
+    if [ "$unit_left" = yes ] && [ "$path" = "$unit_owned" ]; then
+        printf 'kept       %s (the login item still points at it)\n' "$path"
+        refused=yes
+        continue
+    fi
     if ! safe_to_remove "$path"; then
         printf 'refused    %s (not a path this script removes)\n' "$path"
         refused=yes
