@@ -29,9 +29,17 @@
 #      says so
 #   4. uninstall.sh over scenario 1's receipt     -> the app and the daemon binaries go,
 #      and nothing else does
-#   5. the daemon's login unit                     -> install.sh asks whirl's own command
-#      to install it, the receipt records it as whirl's, and uninstall.sh asks the same
-#      command to remove it
+#   5. the installer's default path               -> install.sh writes no login unit and
+#      says nothing about startup, which is the app's on first run and `whirl daemon
+#      install`'s without the app
+#   6. WHIRL_UNIT=install                         -> install.sh runs `whirl daemon install`
+#      and records the login unit as whirl's own
+#   7. the binary a login unit runs               -> uninstall.sh asks whirl's own command
+#      to remove the unit before it deletes that binary, so no login item is left pointing
+#      at a program that is gone
+#   8. a receipt that does not name that binary   -> no uninstall is asked for
+#   9. whirl refuses to remove the unit            -> the binary it runs is kept, and the
+#      run says the login item is still there rather than claiming a clean removal
 #
 # Every scenario also checks the receipt: it names the daemon binaries in the replaced and
 # the reused case alike.
@@ -159,6 +167,64 @@ SCRIPT
     chmod +x "$dir/whirld" "$dir/whirl-worker"
 }
 
+# write_stub_cli <dir> <log>: a stand-in `whirl` for a scratch PATH, the same shape the
+# daemon lifecycle's own tests use. It records its full argv, one call per line, so the
+# question "what did the script actually ask the daemon to do" is answerable from the log.
+# When $WHIRL_STUB_WATCH names a path, it also records whether that path still existed when
+# it ran; that is what shows the unit was removed before the binary it runs was deleted.
+# $WHIRL_STUB_UNINSTALL_CODE makes `daemon uninstall` refuse, which is how a scenario
+# exercises the path where whirl will not remove its own unit.
+write_stub_cli() {
+    cli_dir=$1
+    cli_log=$2
+    mkdir -p "$cli_dir"
+    cat > "$cli_dir/whirl" <<'SCRIPT'
+#!/bin/sh
+log=${WHIRL_STUB_LOG:?}
+printf '%s\n' "$*" >> "$log"
+if [ -n "${WHIRL_STUB_WATCH:-}" ]; then
+    if [ -e "$WHIRL_STUB_WATCH" ]; then
+        printf 'watch %s present\n' "$WHIRL_STUB_WATCH" >> "$log"
+    else
+        printf 'watch %s gone\n' "$WHIRL_STUB_WATCH" >> "$log"
+    fi
+fi
+if [ "${1-} ${2-}" = "daemon uninstall" ]; then
+    code=${WHIRL_STUB_UNINSTALL_CODE:-0}
+    if [ "$code" != 0 ]; then
+        printf 'whirl: cannot remove the login item: refused\n' >&2
+    fi
+    exit "$code"
+fi
+exit 0
+SCRIPT
+    chmod +x "$cli_dir/whirl"
+}
+
+# write_unit <home> <program>: a stand-in login unit where uninstall.sh reads it, with
+# ProgramArguments naming <program>. Its shape is launchd's: the label and the argument
+# vector, and the first argument is the program the supervisor runs.
+write_unit() {
+    unit_home=$1
+    unit_program=$2
+    unit_file="$unit_home/Library/LaunchAgents/com.guruor.whirl.plist"
+    mkdir -p "$(dirname "$unit_file")"
+    cat > "$unit_file" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guruor.whirl</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$unit_program</string>
+    </array>
+</dict>
+</plist>
+PLIST
+}
+
 make_daemon_archive() {
     build=$1
     mkdir -p "$build/pinned"
@@ -192,23 +258,34 @@ PLIST
     (cd "$(dirname "$app_archive")" && shasum -a 256 "$(basename "$app_archive")" > "$(basename "$app_sha")")
 }
 
-# run_install <prefix> <ui_prefix> <receipt>: install.sh with everything pointed under the
-# throwaway directory, and PATH holding only the stand-in prefix and the system.
+# run_install <prefix> <ui_prefix> <receipt> [name=value ...]: install.sh with everything
+# pointed under the throwaway directory, and PATH holding only the stand-in prefix and the
+# system. Any further `name=value` arguments are set for this run alone, which is how a
+# scenario asks for WHIRL_UNIT without leaving it set for the next one.
 run_install() {
     prefix=$1
     ui=$2
     receipt=$3
-    PATH="$prefix:$sys_path" \
-    WHIRL_UI_VERSION="$ui_version" \
-    WHIRL_VERSION="$whirl_version" \
-    WHIRL_UI_ARCHIVE="$app_archive" \
-    WHIRL_UI_SHA256="$app_sha" \
-    WHIRL_ARCHIVE="$daemon_archive" \
-    WHIRL_SHA256="$daemon_sha" \
-    WHIRL_PREFIX="$prefix" \
-    WHIRL_UI_PREFIX="$ui" \
-    WHIRL_UI_RECEIPT="$receipt" \
-    sh "$root/install.sh"
+    shift 3
+    env PATH="$prefix:$sys_path" \
+        WHIRL_UI_VERSION="$ui_version" \
+        WHIRL_VERSION="$whirl_version" \
+        WHIRL_UI_ARCHIVE="$app_archive" \
+        WHIRL_UI_SHA256="$app_sha" \
+        WHIRL_ARCHIVE="$daemon_archive" \
+        WHIRL_SHA256="$daemon_sha" \
+        WHIRL_PREFIX="$prefix" \
+        WHIRL_UI_PREFIX="$ui" \
+        WHIRL_UI_RECEIPT="$receipt" \
+        "$@" \
+        sh "$root/install.sh"
+}
+
+# run_uninstall <home> <path> <receipt>: uninstall.sh with a home of its own, so the login
+# unit it reads is the one a scenario wrote and never the machine's own, the given PATH,
+# and the receipt named.
+run_uninstall() {
+    env HOME="$1" PATH="$2" WHIRL_UI_RECEIPT="$3" sh "$root/uninstall.sh"
 }
 
 # sha_of <path>: the file's sha256, or `absent`.
@@ -318,10 +395,11 @@ echo "=== scenario 4: uninstall.sh over scenario 1's receipt ==="
 s1_receipt=$work/s1/receipt
 s1_prefix=$work/s1/prefix
 s1_ui=$work/s1/ui
+s1_home=$work/s1/home
 keeper=$work/s1/not-this-installs
-mkdir -p "$keeper"
+mkdir -p "$s1_home" "$keeper"
 printf 'keep me\n' > "$keeper/keep"
-out=$(PATH="$sys_path" WHIRL_UI_RECEIPT="$s1_receipt" sh "$root/uninstall.sh" 2>&1)
+out=$(run_uninstall "$s1_home" "$sys_path" "$s1_receipt" 2>&1)
 status=$?
 printf '%s\n' "$out"
 [ "$status" -eq 0 ] || fail "scenario 4: uninstall.sh exited $status"
@@ -335,11 +413,11 @@ scenarios=$((scenarios + 1))
 ok "scenario 4: the receipt's paths went, the untouched file stayed"
 
 # ---------------------------------------------------------------------------
-# 5. the daemon's login unit goes in and comes out through whirl's own commands
+# 5. the installer's default path writes no login unit
 # ---------------------------------------------------------------------------
 
 echo
-echo "=== scenario 5: whirl's own login-unit verbs are the ones the scripts ask for ==="
+echo "=== scenario 5: the installer's default path writes no login unit ==="
 prefix=$work/s5/prefix
 ui=$work/s5/ui
 receipt=$work/s5/receipt
@@ -352,20 +430,148 @@ out=$(run_install "$prefix" "$ui" "$receipt" 2>&1)
 status=$?
 printf '%s\n' "$out"
 [ "$status" -eq 0 ] || fail "scenario 5: install.sh exited $status"
-grep -qx install "$unit_log" 2>/dev/null ||
-    fail "scenario 5: install.sh never asked whirl to install its login unit, so nothing comes up at login"
-contains "$out" "whirl daemon install" ||
-    fail "scenario 5: the run does not name the whirl command that installed the unit"
-receipt_has "$receipt" "unit delegated" ||
-    fail "scenario 5: the receipt does not record the login unit as whirl's, so uninstall.sh would leave it"
-out=$(PATH="$sys_path" WHIRL_UI_RECEIPT="$receipt" sh "$root/uninstall.sh" 2>&1)
-status=$?
-printf '%s\n' "$out"
-[ "$status" -eq 0 ] || fail "scenario 5: uninstall.sh exited $status"
-grep -qx uninstall "$unit_log" 2>/dev/null ||
-    fail "scenario 5: uninstall.sh never asked whirl to remove its login unit"
+[ ! -s "$unit_log" ] ||
+    fail "scenario 5: the default run asked whirl for a login unit, which is not the default"
+contains "$out" "  unit       " &&
+    fail "scenario 5: the default run says something about startup, beyond the header line"
 unset WHIRL_UNIT_LOG
 scenarios=$((scenarios + 1))
-ok "scenario 5: whirl installed the login unit on the way in, and removed it on the way out"
+ok "scenario 5: the default install writes no unit; startup is the app's or whirl's to set"
+
+# ---------------------------------------------------------------------------
+# 6. WHIRL_UNIT=install runs whirl's own login-unit command
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 6: WHIRL_UNIT=install runs whirl's own login-unit command ==="
+prefix=$work/s6/prefix
+ui=$work/s6/ui
+receipt=$work/s6/receipt
+unit_log=$work/s6/unit.log
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+write_daemon "$prefix" unversioned-old
+WHIRL_UNIT_LOG="$unit_log"
+export WHIRL_UNIT_LOG
+out=$(run_install "$prefix" "$ui" "$receipt" WHIRL_UNIT=install 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 6: install.sh exited $status"
+grep -qx install "$unit_log" 2>/dev/null ||
+    fail "scenario 6: WHIRL_UNIT=install never asked whirl to install its login unit"
+contains "$out" "whirl daemon install" ||
+    fail "scenario 6: the run does not name the whirl command it ran"
+receipt_has "$receipt" "unit delegated" ||
+    fail "scenario 6: the receipt does not record the login unit as whirl's"
+unset WHIRL_UNIT_LOG
+scenarios=$((scenarios + 1))
+ok "scenario 6: WHIRL_UNIT=install ran whirl daemon install and recorded the unit as whirl's"
+
+# ---------------------------------------------------------------------------
+# 7. the binary a login unit runs is deleted only after whirl removes the unit
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 7: the login unit is removed before the binary it runs is deleted ==="
+s7=$work/s7
+s7_prefix=$s7/prefix
+s7_elsewhere=$s7/elsewhere
+s7_home=$s7/home
+s7_bin=$s7/bin
+s7_receipt=$s7/receipt
+s7_log=$s7/calls.log
+mkdir -p "$s7_prefix" "$s7_elsewhere" "$s7_home" "$s7_bin" "$(dirname "$s7_receipt")"
+printf '#!/bin/sh\nexit 0\n' > "$s7_prefix/whirld"
+printf '#!/bin/sh\nexit 0\n' > "$s7_prefix/whirl-worker"
+chmod +x "$s7_prefix/whirld" "$s7_prefix/whirl-worker"
+# The receipt names the daemon binaries, and the login unit runs the daemon's own binary.
+# The whirl that removes the unit is a stand-in on a scratch PATH, not a receipt path.
+{
+    printf 'binary %s\n' "$s7_prefix/whirld"
+    printf 'binary %s\n' "$s7_prefix/whirl-worker"
+} > "$s7_receipt"
+write_unit "$s7_home" "$s7_prefix/whirld"
+write_stub_cli "$s7_bin" "$s7_log"
+out=$(WHIRL_STUB_LOG="$s7_log" WHIRL_STUB_WATCH="$s7_prefix/whirld" \
+    run_uninstall "$s7_home" "$s7_bin:$sys_path" "$s7_receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 7: uninstall.sh exited $status"
+grep -qx 'daemon uninstall' "$s7_log" ||
+    fail "scenario 7: uninstall.sh never asked whirl to remove the login unit"
+contains "$out" "before the binary goes" ||
+    fail "scenario 7: the run does not say the unit is removed before the binary"
+grep -qx "watch $s7_prefix/whirld present" "$s7_log" ||
+    fail "scenario 7: whirl ran after the binary it runs was already deleted"
+[ ! -e "$s7_prefix/whirld" ] ||
+    fail "scenario 7: the binary the login unit runs was not removed"
+[ ! -f "$s7_receipt" ] || fail "scenario 7: uninstall.sh left the receipt"
+scenarios=$((scenarios + 1))
+ok "scenario 7: whirl removed the login unit before the binary it runs was deleted"
+
+# ---------------------------------------------------------------------------
+# 8. a receipt that does not name the unit's binary asks whirl for nothing
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 8: a login unit pointing elsewhere is left alone ==="
+s8=$work/s8
+s8_prefix=$s8/prefix
+s8_elsewhere=$s8/elsewhere
+s8_home=$s8/home
+s8_bin=$s8/bin
+s8_receipt=$s8/receipt
+s8_log=$s8/calls.log
+mkdir -p "$s8_prefix" "$s8_elsewhere" "$s8_home" "$s8_bin" "$(dirname "$s8_receipt")"
+printf '#!/bin/sh\nexit 0\n' > "$s8_prefix/whirld"
+chmod +x "$s8_prefix/whirld"
+printf 'binary %s\n' "$s8_prefix/whirld" > "$s8_receipt"
+# The login unit runs a binary this receipt does not own, so nothing here stops it.
+printf '#!/bin/sh\nexit 0\n' > "$s8_elsewhere/whirld"
+chmod +x "$s8_elsewhere/whirld"
+write_unit "$s8_home" "$s8_elsewhere/whirld"
+write_stub_cli "$s8_bin" "$s8_log"
+out=$(WHIRL_STUB_LOG="$s8_log" run_uninstall "$s8_home" "$s8_bin:$sys_path" "$s8_receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 8: uninstall.sh exited $status"
+[ ! -s "$s8_log" ] ||
+    fail "scenario 8: uninstall.sh asked whirl to remove a unit for a binary the receipt does not own"
+[ ! -e "$s8_prefix/whirld" ] || fail "scenario 8: the receipt's binary was not removed"
+[ -x "$s8_elsewhere/whirld" ] || fail "scenario 8: uninstall.sh touched a binary it does not own"
+scenarios=$((scenarios + 1))
+ok "scenario 8: a unit pointing at a binary outside the receipt is left alone"
+
+# ---------------------------------------------------------------------------
+# 9. a whirl that refuses leaves the login item's binary in place
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 9: a whirl that refuses does not leave a unit pointing at nothing ==="
+s9=$work/s9
+s9_prefix=$s9/prefix
+s9_home=$s9/home
+s9_bin=$s9/bin
+s9_receipt=$s9/receipt
+s9_log=$s9/calls.log
+mkdir -p "$s9_prefix" "$s9_home" "$s9_bin" "$(dirname "$s9_receipt")"
+printf '#!/bin/sh\nexit 0\n' > "$s9_prefix/whirld"
+chmod +x "$s9_prefix/whirld"
+printf 'binary %s\n' "$s9_prefix/whirld" > "$s9_receipt"
+write_unit "$s9_home" "$s9_prefix/whirld"
+write_stub_cli "$s9_bin" "$s9_log"
+out=$(WHIRL_STUB_LOG="$s9_log" WHIRL_STUB_UNINSTALL_CODE=1 \
+    run_uninstall "$s9_home" "$s9_bin:$sys_path" "$s9_receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] ||
+    fail "scenario 9: uninstall.sh exited $status, not 1, after whirl refused"
+[ -e "$s9_prefix/whirld" ] ||
+    fail "scenario 9: the binary the login unit runs was deleted although the unit was not removed"
+[ -f "$s9_receipt" ] ||
+    fail "scenario 9: the receipt was removed although a path above was kept"
+contains "$out" "still points at" ||
+    fail "scenario 9: the run does not say the login item is still there"
+scenarios=$((scenarios + 1))
+ok "scenario 9: a refused unit removal keeps the binary and reports the login item is still there"
 
 printf '\ntest-install: all %s scenarios passed\n' "$scenarios"

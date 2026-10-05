@@ -32,14 +32,17 @@
 # unpacked, so a tampered or truncated download installs nothing. Nothing needs root, a
 # password or an answer: one command, one exit code.
 #
-# This script never writes the daemon's login unit. The daemon owns its own unit, so the
-# script asks whirl's own installer to put it there and does nothing else with it
-# (docs/milestones.md, M3 criterion 3). No unit file is written here, and uninstall.sh
-# asks whirl's own command to take it away again. The verb is read from whirl's own usage
-# rather than assumed, because the name changed once: the released v0.2 CLI lists
-# `daemon install`, and earlier notes describe a `service` step that no released CLI has
-# ever listed. Asking for a verb the binary does not have must not fail the install of a
-# daemon that works, and must not pass for a unit that was never installed.
+# This script installs the binaries and nothing else, and where startup is set is not here:
+# the app sets it on first run, and, without the app, `whirl daemon install` does. No login
+# unit is written here and `launchctl` is never called. A headless or provisioning run can
+# ask for it, and this script then runs the daemon's own command and reports what it said:
+#
+#   WHIRL_UNIT=install   ask whirl's own command to install its login unit
+#
+# The daemon owns its own unit, so `whirl daemon install` is the only thing that writes it
+# (docs/milestones.md, M3 criterion 3). uninstall.sh asks the same command to take the unit
+# away before it removes the binary the unit runs, so no login item is left pointing at a
+# program that is gone.
 #
 # Read this file before you run it; it is short on purpose, and the documented route is
 # "download, read, run". Piping it into a shell is offered beside that route, never
@@ -66,6 +69,8 @@
 #   WHIRL_ARCHIVE      <path or URL>       use this archive, skip the download
 #   WHIRL_SHA256       <path or URL>       its checksum; default <archive>.sha256
 #   WHIRL_PREFIX       ~/.local/bin        where the three daemon binaries go
+#   WHIRL_UNIT         unset                set to `install` to ask whirl's own command
+#                                          to install its login unit; unset writes none
 #
 # Exit codes: 0 installed or reused, as reported; 1 refused (platform, download,
 # checksum, unwritable destination); 2 no arguments are taken; 3 the app's prefix needs
@@ -82,8 +87,9 @@ install.sh: whirl and Whirl, in one command.
   sh install.sh --help     this text
 
 It downloads the whirl daemon archive and the Whirl.app archive, checks each against
-the sha256 published beside it, and installs them. It never writes the daemon's login
-unit: whirl owns that unit and installs it.
+the sha256 published beside it, and installs the binaries. It never writes the daemon's
+login unit: startup is set by the app on first run, or, without the app, by
+`whirl daemon install`. WHIRL_UNIT=install asks whirl's own command for that unit.
 
 The app and the daemon are installed as one release: a daemon already here is reused
 only when it is the same release or newer, and an older daemon is replaced by the
@@ -114,6 +120,7 @@ Overrides (optional; the defaults are the published release):
   WHIRL_ARCHIVE      path or URL of the daemon archive
   WHIRL_SHA256       path or URL of its checksum
   WHIRL_PREFIX       ~/.local/bin
+  WHIRL_UNIT         unset: no login unit. `install` runs `whirl daemon install`
 
 Undo: sh uninstall.sh
 USAGE
@@ -316,8 +323,6 @@ if command -v whirld >/dev/null 2>&1; then
     daemon_found="$(command -v whirld)"
 elif [ -x "$daemon_prefix/whirld" ]; then
     daemon_found="$daemon_prefix/whirld"
-elif launchctl print "gui/$(id -u)/com.guruor.whirl" >/dev/null 2>&1; then
-    daemon_found="the loaded login item com.guruor.whirl"
 fi
 
 # A daemon found by any route is versioned before it is trusted, and the version is read
@@ -476,38 +481,6 @@ if [ "$daemon_action" = install ]; then
         note "  installed  $daemon_prefix/$name"
         record binary "$daemon_prefix/$name"
     done
-
-    # The daemon's login unit is whirl's, not this app's: this asks whirl's own installer
-    # to put it there and never writes a unit file itself. The verb is read out of whirl's
-    # own usage instead of being assumed. It was renamed once, and the rename is the
-    # defect this guards: whirl v0.1 shipped no installer at all, the notes of that time
-    # describe a `service` step, and the released v0.2 CLI lists `daemon install`. Asking
-    # for the name in the notes matches nothing, which is a quiet failure: the daemon's
-    # binaries land, the login unit is never installed, and a daemon that is meant to come
-    # up at login comes up only when the person starts it by hand.
-    unit_verb=install
-    if "$daemon_prefix/whirl" help 2>/dev/null | grep -q '^  daemon install'; then
-        unit_command=daemon
-    elif "$daemon_prefix/whirl" help 2>/dev/null | grep -q '^  service install'; then
-        unit_command=service
-    else
-        unit_command=
-    fi
-    if [ -n "$unit_command" ]; then
-        # Two words, and the split is the point: `daemon install` is two arguments.
-        # shellcheck disable=SC2086
-        "$daemon_prefix/whirl" $unit_command $unit_verb
-        record unit delegated
-        note "  unit       whirl installed its own login item (com.guruor.whirl), with its own"
-        note "             \`whirl $unit_command install\`, so the daemon comes up at login."
-        note "             uninstall.sh asks whirl's own command to take it away again, and stops"
-        note "             the daemon the same way. This script wrote no unit file."
-    else
-        note "  unit       whirl $WHIRL_VERSION lists no verb that installs its login item, so none"
-        note "             was written, here or anywhere; start the daemon yourself until it does,"
-        note "             and stop it the same way. uninstall.sh will not stop a daemon it did not"
-        note "             start."
-    fi
 fi
 
 if [ "$daemon_action" = reused ]; then
@@ -520,6 +493,38 @@ if [ "$daemon_action" = reused ]; then
         note "  binary     $daemon_path"
         record binary "$daemon_path"
     done
+fi
+
+# Where startup is set is not here: the app sets it on first run, and, without the app,
+# `whirl daemon install` does. A headless or provisioning run has neither, so it can ask
+# for the unit with WHIRL_UNIT=install. This runs the daemon's own command, reports what
+# that command said, and does nothing else: no unit file is written from here and
+# launchctl is never called, so the unit that lands is whirl's own.
+if [ "${WHIRL_UNIT:-}" = install ]; then
+    unit_cli=
+    if [ -x "$daemon_prefix/whirl" ]; then
+        unit_cli="$daemon_prefix/whirl"
+    elif [ -n "$daemon_cli" ] && [ -x "$daemon_cli" ]; then
+        unit_cli="$daemon_cli"
+    else
+        unit_cli=$(command -v whirl 2>/dev/null || true)
+    fi
+    if [ -z "$unit_cli" ] || [ ! -x "$unit_cli" ]; then
+        note "  unit       WHIRL_UNIT=install was asked for, but no whirl command is here to"
+        note "             install its login unit, so none was written; set startup yourself with"
+        note "             \`whirl daemon install\` once the daemon is on this machine."
+    else
+        note "  unit       WHIRL_UNIT=install: running \`whirl daemon install\`"
+        if "$unit_cli" daemon install; then
+            record unit delegated
+            note "  unit       whirl installed its own login item (com.guruor.whirl). No unit file"
+            note "             was written here and launchctl was not called; that is the daemon's"
+            note "             own command's doing, and uninstall.sh asks the same command to undo it."
+        else
+            note "  unit       whirl's own command did not install a login item; see its output above,"
+            note "             and set startup yourself with \`whirl daemon install\` when you want it."
+        fi
+    fi
 fi
 
 if [ "$app_action" = install ]; then
