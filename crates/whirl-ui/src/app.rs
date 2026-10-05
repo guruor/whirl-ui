@@ -19,8 +19,8 @@
 //! person reads twice: every heading, button, line and refusal comes from a
 //! constant or a method on the value in `settings`, so the window on screen and
 //! the text `--dump-settings` prints cannot drift apart. The window's *shape* is
-//! [`crate::theme`]'s: the sidebar, the cards, the segmented control, the rows,
-//! the toggles and the footer are drawn in the reference's palette and metrics,
+//! [`crate::theme`]'s: the sidebar, the cards, the rows, the toggles and the
+//! footer are drawn in the reference's palette and metrics,
 //! and nothing here picks a colour or a size of its own.
 //!
 //! Nothing here opens a socket to change a setting, so no part of an edit is a
@@ -223,10 +223,12 @@ impl eframe::App for App {
 /// other. The tray owns the viewport and this owns what is in it.
 ///
 /// The shape is the reference's: a sidebar carrying the mark, the wordmark, the
-/// pane rows and a status footer, and a centre panel carrying the pane's title,
-/// the segmented control and the pane itself. The three panes are the three
-/// blocks the window has always drawn; naming them adds no pane, and the
-/// sidebar lists exactly them rather than the reference's future sections.
+/// pane rows and a status footer, and a centre panel carrying the pane's title
+/// and the pane itself. The pane list is the sidebar's alone: the centre panel's
+/// top strip is reserved for a pane's own sub-views and carries no control over
+/// the panes (see [`header`]). The three panes are the three blocks the window
+/// has always drawn; naming them adds no pane, and the sidebar lists exactly them
+/// rather than the reference's future sections.
 ///
 /// While the folder chooser is open it is the whole centre panel: the choice it
 /// is making is the only thing on screen, and a half-drawn list of folders under
@@ -244,7 +246,7 @@ pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
                 picker(ui, settings);
                 return;
             }
-            header(ui, settings);
+            header(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| match settings.pane {
@@ -353,8 +355,17 @@ fn footer(ui: &mut egui::Ui, settings: &Settings) {
     });
 }
 
-/// The pane's title, its subtitle, and the control that moves between panes.
-fn header(ui: &mut egui::Ui, settings: &mut Settings) {
+/// The pane's title, its subtitle, and the strip below them that is reserved
+/// for a pane's own sub-views.
+///
+/// **The top strip is for a pane's sub-views, never for the pane list.** A
+/// segmented control over [`Pane`] was drawn here once, beside the sidebar's
+/// rows, and the two controls did the same job in two languages; the sidebar is
+/// the pane list and this strip is for what a pane grows *inside* itself. A pane
+/// that gains sub-views (tabs within Sources, modes within Rotation) puts its
+/// control here, and it moves between that pane's views and never between panes.
+/// Adding a pane is a row in [`sidebar`], not a second control here.
+fn header(ui: &mut egui::Ui) {
     ui.label(
         RichText::new(WINDOW_TITLE)
             .size(theme::TEXT_TITLE)
@@ -367,43 +378,6 @@ fn header(ui: &mut egui::Ui, settings: &mut Settings) {
             .color(theme::TEXT_SECONDARY),
     );
     ui.add_space(theme::SPACE_MD);
-    segmented(ui, settings);
-    ui.add_space(theme::SPACE_MD);
-}
-
-/// The segmented control: one pill per pane, the selected one in the accent.
-fn segmented(ui: &mut egui::Ui, settings: &mut Settings) {
-    let current = settings.pane;
-    egui::Frame::NONE
-        .fill(theme::PANEL)
-        .corner_radius(CornerRadius::same(theme::RADIUS_MD))
-        .inner_margin(Margin::same(4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for pane in Pane::ALL {
-                    let selected = pane == current;
-                    let label =
-                        RichText::new(pane.name())
-                            .size(theme::TEXT_BODY)
-                            .color(if selected {
-                                Color32::WHITE
-                            } else {
-                                theme::TEXT_SECONDARY
-                            });
-                    let pill = egui::Button::new(label)
-                        .corner_radius(CornerRadius::same(theme::RADIUS_SM))
-                        .fill(if selected {
-                            theme::ACCENT
-                        } else {
-                            theme::PANEL
-                        })
-                        .min_size(egui::vec2(104.0, theme::CONTROL_HEIGHT - 4.0));
-                    if ui.add(pill).clicked() {
-                        settings.pane = pane;
-                    }
-                }
-            });
-        });
 }
 
 /// One raised surface in the palette: the card everything else is drawn in.

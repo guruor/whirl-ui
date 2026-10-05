@@ -53,10 +53,10 @@ pub const WINDOW_SIZE: [f32; 2] = [860.0, 620.0];
 /// Which of the window's three panes is on screen.
 ///
 /// The window draws one pane at a time, and this is which: the sidebar's rows
-/// and the segmented control move it, and a screenshot names it on the command
-/// line. It is a build-time-only grouping of what the window already said: the
-/// three panes are the three blocks [`Settings::to_text`] has printed since the
-/// window existed, so no new pane is added by naming them.
+/// move it, and a screenshot names it on the command line. It is a
+/// build-time-only grouping of what the window already said: the three panes
+/// are the three blocks [`Settings::to_text`] has printed since the window
+/// existed, so no new pane is added by naming them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pane {
     /// Where the wallpapers come from.
@@ -69,7 +69,7 @@ pub enum Pane {
 }
 
 impl Pane {
-    /// Every pane, in the order the sidebar and the segmented control show them.
+    /// Every pane, in the order the sidebar shows them.
     pub const ALL: [Pane; 3] = [Pane::Sources, Pane::Rotation, Pane::App];
 
     /// The pane's name on a control, and the word `--screenshot` takes.

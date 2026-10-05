@@ -38,8 +38,7 @@ use eframe::egui::{
 /// `#0A1627`, 979,189 px of the reference, its dominant colour.
 pub const CANVAS: Color32 = Color32::from_rgb(0x0A, 0x16, 0x27);
 
-/// The panel and the card: every raised surface, and the segmented control's
-/// own rail.
+/// The panel and the card: every raised surface.
 ///
 /// `#1B2C54`, 61,849 px.
 pub const PANEL: Color32 = Color32::from_rgb(0x1B, 0x2C, 0x54);
@@ -117,7 +116,7 @@ pub const SPACE_LG: f32 = 20.0;
 pub const RADIUS_SM: u8 = 6;
 /// The radius of a row and a nav item.
 pub const RADIUS_ROW: u8 = 8;
-/// The radius of a card and the segmented control's rail.
+/// The radius of a card.
 pub const RADIUS_MD: u8 = 10;
 
 /// The sidebar's width, a little under a quarter of the window.
