@@ -148,6 +148,7 @@ terminal, in the daemon's own words rather than in a format invented here:
     cargo run -- --dump-config-check   # the effective plan the daemon adopted
     cargo run -- --dump-settings       # what the settings window shows, as text
     cargo run -- --screenshot shot.png # run the window, write it to a PNG, and exit
+    cargo run -- --check-update        # the About pane's release check, one line
     cargo run -- --login-item status   # the app's own login item, as macOS reports it
 
 `--login-item` takes `status`, `register` or `unregister`, and every verb ends by printing the status, so
@@ -156,8 +157,16 @@ registers a login item for: from `Whirl.app` it registers that app, and from a b
 names the executable it looked at. `scripts/make-bundle.sh` is what writes `Whirl.app`.
 
 The dump modes exit 0 on success, 1 if the daemon refused, 2 if it is unreachable and 3 if the command
-line cannot work. `--dump-settings` prints its three panes with no daemon too, where each one renders
+line cannot work. `--dump-settings` prints its four panes with no daemon too, where each one renders
 the reason it has nothing to show: a pane that showed an empty list would be saying something untrue.
+
+The About pane says what the app is, which build is running, where its source lives and whether the
+daemon is connected. The version is read from the app bundle's `Info.plist`
+(`CFBundleShortVersionString`), and both it and the string the binary itself reports are shown when
+they disagree, because a build installed over another is exactly that disagreement. Its `Check for a
+newer release` button makes one anonymous `GET` to this repository's published releases: nothing
+schedules it, nothing is sent but the request, and a check that could not be made says so rather than
+reading as up to date. `--check-update` makes the same call from a terminal.
 
 `--screenshot` writes the window's own pixels rather than the screen's, so the file carries the window
 and nothing else that happened to be on the machine.

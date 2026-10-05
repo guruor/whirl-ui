@@ -1,8 +1,8 @@
 //! The settings window, asserted with no display attached.
 //!
 //! A window cannot be opened in a test, so the window is made answerable from the
-//! command line: `whirl-ui --dump-settings` prints the two choices it draws, in
-//! the same words, and this file asserts them. The two states `README.md`
+//! command line: `whirl-ui --dump-settings` prints the panes it draws, in the
+//! same words, and this file asserts them. The two states `README.md`
 //! describes are both here: a real daemon (which every assertion about values
 //! needs), and no daemon at all, where the window renders the reason, still
 //! offers its controls, and nothing crashes.
@@ -109,14 +109,42 @@ fn with_no_daemon_the_window_shows_the_reason_and_still_offers_its_controls() {
     // No crash: the process ran to its own exit rather than panicking.
     assert!(!stderr.contains("panicked"), "{stderr}");
 
-    // The two choices, and nothing else: no App pane, no dump of the rest of the
-    // file.
+    // The three panes of choices and state, and nothing else: no dump of the rest
+    // of the file.
     for title in ["Wallpapers come from", "How often they change"] {
         assert!(stdout.contains(title), "{stdout}");
     }
     for gone in ["socket: live", "daemon_version", "protocol: 2", "count: "] {
         assert!(!stdout.contains(gone), "{gone} in:\n{stdout}");
     }
+
+    // The About block is on screen with no daemon too, and says so: a tester
+    // pastes the whole picture from one pane, and a check that could not be made
+    // is a line the window prints rather than a silence.
+    assert!(stdout.contains("About\n"), "{stdout}");
+    assert!(
+        stdout.contains("https://github.com/guruor/whirl-ui"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("the daemon: not connected"), "{stdout}");
+    assert!(stdout.contains("Check for a newer release"), "{stdout}");
+    let about = stdout.split("About\n").nth(1).expect("the About block");
+    // The About block names no path on this machine: a version, a URL, and the
+    // daemon in a word.
+    if let Ok(home) = std::env::var("HOME") {
+        assert!(
+            !about.contains(&home),
+            "the About block names the operator's home:\n{about}"
+        );
+    }
+    // Nothing has been checked yet, so no outcome is on screen: the check's own
+    // line is there, and none of the three verdicts is.
+    assert!(!about.contains("could not be made"), "{about}");
+    assert!(!about.contains("a newer version is published"), "{about}");
+    assert!(
+        !about.contains("this is the newest version published"),
+        "{about}"
+    );
 
     // The daemon's line carries the reason once, and the controls are all still
     // there: a window that went blank when the daemon stopped would be a window a
@@ -176,6 +204,13 @@ fn with_a_daemon_the_window_shows_what_the_daemon_and_the_file_report() {
     let mut client = client;
     let config_line = client.config_path().expect("config path");
     let check = client.config_check().expect("config check");
+    let version = client.version().expect("the daemon's version");
+    let daemon_version = version
+        .iter()
+        .find_map(|line| line.strip_prefix("daemon_version: "))
+        .expect("a daemon_version line")
+        .trim()
+        .to_string();
     let (_config, document) = daemon_config(&config_line);
 
     let output = run_inherited("--dump-settings");
@@ -186,6 +221,14 @@ fn with_a_daemon_the_window_shows_what_the_daemon_and_the_file_report() {
     assert!(stdout.contains("whirl is running"), "{stdout}");
     assert!(
         stdout.contains("whirl picks them up the next time it reads it"),
+        "{stdout}"
+    );
+
+    // The About block carries the daemon's own version and says it is connected,
+    // so one pane answers which daemon this build is talking to, in the daemon's
+    // own words rather than in this window's.
+    assert!(
+        stdout.contains(&format!("the daemon: {daemon_version}, connected")),
         "{stdout}"
     );
 
@@ -298,5 +341,45 @@ fn a_screenshot_state_the_window_does_not_have_is_a_command_line_error() {
         stderr_of(&missing_path).contains("takes the path to write"),
         "{}",
         stderr_of(&missing_path)
+    );
+}
+
+#[test]
+fn the_update_check_that_could_not_be_made_says_so() {
+    // The check is one request, so a machine that cannot make it gets the reason
+    // and an exit code that is not success. A proxy that does not resolve is
+    // that machine, and it costs no network: `.invalid` is reserved.
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+        .env("https_proxy", "http://no-such-host.invalid:9")
+        .env("HTTPS_PROXY", "http://no-such-host.invalid:9")
+        .arg("--check-update")
+        .output()
+        .expect("the app runs");
+    let stdout = stdout_of(&output);
+    assert_eq!(output.status.code(), Some(2), "{stdout}");
+    assert!(stdout.contains("the check could not be made:"), "{stdout}");
+    // The one outcome this path must never fake: a check that failed is not the
+    // newest release.
+    assert!(
+        !stdout.contains("this is the newest version published"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("a newer version is published"), "{stdout}");
+}
+
+#[test]
+fn the_update_check_takes_no_arguments() {
+    // The check is a mode of its own, not a verb with a subject: there is nothing
+    // to point it at, and nothing to configure.
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+        .arg("--check-update")
+        .arg("--now")
+        .output()
+        .expect("the app runs");
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        stderr_of(&output).contains("--check-update takes no arguments"),
+        "{}",
+        stderr_of(&output)
     );
 }

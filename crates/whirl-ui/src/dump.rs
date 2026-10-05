@@ -207,11 +207,12 @@ fn one(client: &mut Client, request: &Request) -> ExitCode {
 /// The answers the settings window is built from, and the exit code of the
 /// first request that failed.
 ///
-/// Two requests, and the file in between: where the daemon's config file is, and
-/// the rotation it is using now. What the window shows about the sources comes
-/// from the file itself, because the file is what the window edits. Every request
-/// is made even after one fails: one verb can be refused while the other answers,
-/// and the half that was answered keeps its place on screen.
+/// Three requests, and the file in between: where the daemon's config file is,
+/// the rotation it is using now, and its own version. What the window shows
+/// about the sources comes from the file itself, because the file is what the
+/// window edits. Every request is made even after one fails: one verb can be
+/// refused while another answers, and the half that was answered keeps its place
+/// on screen.
 pub(crate) fn settings_answers() -> (Answers, u8) {
     let mut client = match Client::connect() {
         Ok(client) => client,
@@ -219,20 +220,24 @@ pub(crate) fn settings_answers() -> (Answers, u8) {
     };
     let (config_path, path_code) = ask(&mut client, &Request::ConfigPath);
     let (config_check, check_code) = ask(&mut client, &Request::ConfigCheck);
+    let (version, version_code) = ask(&mut client, &Request::Version);
     let _ = client.close();
 
-    let code = [path_code, check_code]
+    let code = [path_code, check_code, version_code]
         .into_iter()
         .find(|code| *code != EXIT_OK)
         .unwrap_or(EXIT_OK);
-    let answers = match (config_path, config_check) {
-        (Ok(config_path), Ok(config_check)) => Answers::live(config_path, config_check),
+    let answers = match (config_path, config_check, version) {
+        (Ok(config_path), Ok(config_check), Ok(version)) => {
+            Answers::live(config_path, config_check, version)
+        }
         // The socket answered, so it is live, and the half that was refused says
         // so in the daemon's own words.
-        (config_path, config_check) => Answers {
+        (config_path, config_check, version) => Answers {
             connection: Ok(()),
             config_path,
             config_check,
+            version,
         },
     };
     (answers, code)

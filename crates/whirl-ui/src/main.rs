@@ -18,6 +18,7 @@
 //! code and a place in the shell, which is what makes a change something a test
 //! can run and a person can script.
 
+mod about;
 mod app;
 mod config_file;
 mod dump;
@@ -36,8 +37,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use about::Check;
 use config_file::Direction;
-use dump::{EXIT_OK, EXIT_REFUSED, EXIT_USAGE, Mode, print_line};
+use dump::{EXIT_OK, EXIT_REFUSED, EXIT_UNREACHABLE, EXIT_USAGE, Mode, print_line};
 use settings::{Outcome, Pane, Settings, Unit};
 
 const USAGE: &str = "\
@@ -85,11 +87,14 @@ modes:
   --screenshot <path> [state]
                         run the window, write it to a PNG, and exit. The state
                         names the pane to photograph and any control to open on
-                        it. The panes are sources (the default), rotation and
-                        app; the control states are chooser and key (on the
-                        Sources pane) and rejected and words (on Rotation), and
-                        each one is put on through the same method the control
-                        it shows calls
+                        it. The panes are sources (the default), rotation, app
+                        and about; the control states are chooser and key (on
+                        the Sources pane), rejected and words (on Rotation), and
+                        check-newer, check-newest and check-failed (the About
+                        pane's release check, one outcome each), and each one is
+                        put on through the same method the control it shows calls
+  --check-update        make the release check the About pane's button makes,
+                        print its one line, and exit. It needs no daemon.
   -h, --help            print this
 
 The dump modes talk to a running daemon: exit 0 on success, 1 if the daemon
@@ -101,12 +106,15 @@ parser refused the value or the file could not be written, and 3 when the value
 is not a number or the unit is not minutes or hours; it needs no daemon, because
 the file is what it writes. `--source` exits 0 when the edit landed, 1 when the
 parser or the store refused it, and 3 when the verb or its arguments do not make
-a command line; it needs no daemon either, for the same reason. `--login-item`
-exits 0 when it has printed the status it was asked for (every verb ends by
-printing it, so a before and an after are the same line), 1 when macOS refused
-the change or the executable is not inside an app bundle, which is the one thing
-a login item needs and a bare binary has not got, and 3 when the verb is not one
-of the three.";
+a command line; it needs no daemon either, for the same reason. `--check-update`
+makes the release check the About pane's button makes: exit 0 when the check was
+made (a newer release is published, or this one is the newest), and 2 when it
+could not be made, with the reason on the line it prints. It needs no daemon.
+`--login-item` exits 0 when it has printed the status it was asked for (every
+verb ends by printing it, so a before and an after are the same line), 1 when
+macOS refused the change or the executable is not inside an app bundle, which is
+the one thing a login item needs and a bare binary has not got, and 3 when the
+verb is not one of the three.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -129,6 +137,14 @@ fn main() -> ExitCode {
 
     if first == "--source" {
         return source_command(&args[1..]);
+    }
+
+    if first == "--check-update" {
+        if args.len() != 1 {
+            eprintln!("whirl-ui: --check-update takes no arguments");
+            return ExitCode::from(EXIT_USAGE);
+        }
+        return check_update();
     }
 
     if first == "--login-item" {
@@ -175,13 +191,19 @@ fn main() -> ExitCode {
 ///
 /// The window is the one deliverable a test cannot open, so a screenshot is how
 /// it becomes evidence rather than a claim about it. These are the states worth a
-/// photograph: the three panes, and the controls that open on two of them. Each
-/// one is put on through the same method the control calls rather than by drawing
-/// something that resembles it.
+/// photograph: the four panes, the controls that open on two of them, and the
+/// About pane's release check in each of its three outcomes. Each one is put on
+/// through the same method the control calls rather than by drawing something
+/// that resembles it.
 ///
 /// All of them leave the config file as they found it: the chooser and the key
 /// field write nothing, and `rejected` writes nothing because the save it makes
 /// is one the daemon's own parser refuses before the file is touched.
+///
+/// The three check states make no request either. A release is put in through
+/// [`about::judge`], the same decision the live check uses, because this
+/// repository has published no release and the two positive branches would
+/// otherwise be unphotographable; the live path is `--check-update`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Snap {
     /// The Sources pane, as the window opens.
@@ -190,6 +212,8 @@ enum Snap {
     Rotation,
     /// The App pane.
     App,
+    /// The About pane, as the window opens: no check made yet.
+    About,
     /// The folder chooser, open on where a new source would start.
     Chooser,
     /// The Wallhaven key field, open.
@@ -200,22 +224,33 @@ enum Snap {
     /// which no command line can reach, because a command line refuses the
     /// argument before the window's field ever holds it.
     Words,
+    /// The About pane after a check found a newer release.
+    CheckNewer,
+    /// The About pane after a check found the running version is the newest.
+    CheckNewest,
+    /// The About pane after a check that could not be made.
+    CheckFailed,
 }
 
 impl Snap {
     /// Every state, in the order the usage line lists them.
-    const ALL: [Snap; 7] = [
+    const ALL: [Snap; 11] = [
         Snap::Sources,
         Snap::Rotation,
         Snap::App,
+        Snap::About,
         Snap::Chooser,
         Snap::Key,
         Snap::Rejected,
         Snap::Words,
+        Snap::CheckNewer,
+        Snap::CheckNewest,
+        Snap::CheckFailed,
     ];
 
     /// The states as the usage line spells them.
-    const NAMES: &'static str = "sources, rotation, app, chooser, key, rejected, words";
+    const NAMES: &'static str = "sources, rotation, app, about, chooser, key, rejected, words, \
+                                 check-newer, check-newest, check-failed";
 
     /// The word a command line uses for this state.
     fn name(self) -> &'static str {
@@ -223,10 +258,14 @@ impl Snap {
             Snap::Sources => "sources",
             Snap::Rotation => "rotation",
             Snap::App => "app",
+            Snap::About => "about",
             Snap::Chooser => "chooser",
             Snap::Key => "key",
             Snap::Rejected => "rejected",
             Snap::Words => "words",
+            Snap::CheckNewer => "check-newer",
+            Snap::CheckNewest => "check-newest",
+            Snap::CheckFailed => "check-failed",
         }
     }
 
@@ -241,6 +280,36 @@ impl Snap {
             Snap::Sources => settings.pane = Pane::Sources,
             Snap::Rotation => settings.pane = Pane::Rotation,
             Snap::App => settings.pane = Pane::App,
+            Snap::About => settings.pane = Pane::About,
+            Snap::CheckNewer => {
+                settings.pane = Pane::About;
+                settings.check = Some(about::judge(
+                    &settings.running_version(),
+                    &about::Release {
+                        version: "0.2.0".to_string(),
+                        page: "https://github.com/guruor/whirl-ui/releases/tag/v0.2.0".to_string(),
+                    },
+                ));
+            }
+            Snap::CheckNewest => {
+                settings.pane = Pane::About;
+                let running = settings.running_version();
+                settings.check = Some(about::judge(
+                    &running,
+                    &about::Release {
+                        version: running.clone(),
+                        page: "https://github.com/guruor/whirl-ui/releases/tag/v0.1.0".to_string(),
+                    },
+                ));
+            }
+            Snap::CheckFailed => {
+                settings.pane = Pane::About;
+                // The wording curl uses for a host it cannot resolve, which is
+                // the reason a check on a machine with no network carries.
+                settings.check = Some(Check::CouldNot {
+                    reason: "Could not resolve host: api.github.com".to_string(),
+                });
+            }
             Snap::Chooser => {
                 settings.pane = Pane::Sources;
                 settings.open_picker(None);
@@ -264,6 +333,22 @@ impl Snap {
                 settings.save_interval();
             }
         }
+    }
+}
+
+/// Make the release check, the same call the About pane's button makes.
+///
+/// It needs no daemon and no window: the check is one request to this app's own
+/// published releases and nothing else, so this is the button's behaviour with a
+/// place in the shell. Exit 0 when the check was made, and 2 when it could not
+/// be: a check that could not be made is not a success, and it says so on the
+/// line it prints.
+fn check_update() -> ExitCode {
+    let check = about::check();
+    print_line(&check.line());
+    match check {
+        Check::CouldNot { .. } => ExitCode::from(EXIT_UNREACHABLE),
+        Check::Newer(_) | Check::Newest(_) => ExitCode::from(EXIT_OK),
     }
 }
 
