@@ -19,15 +19,127 @@
 //! Nothing here writes a unit file, unlinks a socket, or kills a process, and
 //! nothing here knows a socket path: the daemon's lifecycle is the daemon's.
 
-use std::io::ErrorKind;
+use std::env;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The command the daemon's lifecycle is asked through, found on `PATH`.
+/// The command's own name: the basename every candidate shares, and the name
+/// looked up on `PATH` last.
 ///
-/// It is a name rather than a path on purpose: the daemon is installed beside
-/// its own command, and a frontend that guessed at an install location would be
-/// describing a layout it does not own.
+/// The command is a name here and a path everywhere else: [`resolve`] finds the
+/// absolute path of the copy to run, so the app can report which one it used
+/// instead of describing a layout it does not own. `PATH` alone is not enough,
+/// and that is the bug this constant used to hide: a GUI launched from Finder
+/// inherits launchd's `PATH`, which never holds `~/.local/bin`, where
+/// `install.sh` puts the daemon.
 pub const PROGRAM: &str = "whirl";
+
+/// Where the daemon's own command is, in the order its installer makes it
+/// findable, named by an absolute path.
+///
+/// The search is the one `install.sh` writes down, not a guess:
+///
+/// 1. the `binary <path>` line for `whirl` in the install receipt, whatever
+///    prefix the install used;
+/// 2. `$WHIRL_PREFIX/whirl` when the installer was told a prefix, else
+///    `~/.local/bin/whirl`, the default `install.sh:152` writes to;
+/// 3. `/usr/local/bin/whirl`, where a `[sudo] make install` would put it;
+/// 4. `whirl` on `PATH`, as the app always did.
+///
+/// `None` means no copy was found anywhere this app looks. That is the only
+/// case the command may be called missing: a `whirl` on `PATH` is the last
+/// resort, not the first.
+pub fn resolve() -> Option<PathBuf> {
+    if let Some(receipt) = receipt_path().and_then(|receipt| std::fs::read_to_string(receipt).ok())
+        && let Some(program) = receipt_binary(&receipt).filter(|program| program.is_file())
+    {
+        return Some(program);
+    }
+    if let Some(program) = prefix_candidate().filter(|program| program.is_file()) {
+        return Some(program);
+    }
+    let system = Path::new("/usr/local/bin").join(PROGRAM);
+    if system.is_file() {
+        return Some(system);
+    }
+    on_path()
+}
+
+/// The `binary <path>` line the installer wrote for the command, if any.
+///
+/// The receipt is `install.sh`'s own record: one `binary <absolute path>` line
+/// per binary it placed, beside the `dir`, `app` and `unit` lines this search
+/// ignores. The path is returned whether or not it exists; the caller decides
+/// what a path that no longer exists means (nothing, and it keeps looking).
+pub fn receipt_binary(receipt: &str) -> Option<PathBuf> {
+    receipt.lines().find_map(|line| {
+        let path = Path::new(line.strip_prefix("binary ")?);
+        (path.file_name() == Some(OsStr::new(PROGRAM))).then(|| path.to_path_buf())
+    })
+}
+
+/// The receipt `install.sh` writes, and this app reads.
+///
+/// `WHIRL_UI_RECEIPT` is the installer's own name for the path, so a receipt
+/// written elsewhere is still found; the default is
+/// `~/Library/Application Support/whirl-ui/install.receipt`.
+fn receipt_path() -> Option<PathBuf> {
+    if let Some(explicit) = env::var_os("WHIRL_UI_RECEIPT") {
+        return Some(PathBuf::from(explicit));
+    }
+    home().map(|home| home.join("Library/Application Support/whirl-ui/install.receipt"))
+}
+
+/// `$WHIRL_PREFIX/whirl` when a prefix was given, else `~/.local/bin/whirl`.
+fn prefix_candidate() -> Option<PathBuf> {
+    match env::var_os("WHIRL_PREFIX") {
+        Some(prefix) => Some(PathBuf::from(prefix).join(PROGRAM)),
+        None => home().map(|home| home.join(".local/bin").join(PROGRAM)),
+    }
+}
+
+/// The home directory the process inherited, when it has a non-empty one.
+fn home() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+}
+
+/// The first `whirl` on `PATH`, named by its absolute path.
+fn on_path() -> Option<PathBuf> {
+    env::split_paths(&env::var_os("PATH")?)
+        .map(|directory| directory.join(PROGRAM))
+        .find(|program| program.is_file())
+}
+
+/// The places the search looked, as the missing message names them.
+///
+/// The receipt is named by its path so a user can see which file was read, and
+/// the install prefix is written `~`-relative when it is under the home
+/// directory, which is the form the installer's own output uses.
+fn searched_places() -> Vec<String> {
+    let mut places = Vec::new();
+    match receipt_path() {
+        Some(receipt) => places.push(format!("the install receipt {}", tilde(&receipt))),
+        None => places.push("the install receipt".to_string()),
+    }
+    match prefix_candidate() {
+        Some(prefix) => places.push(tilde(&prefix)),
+        None => places.push("~/.local/bin/whirl".to_string()),
+    }
+    places.push("/usr/local/bin/whirl".to_string());
+    places.push(format!("{PROGRAM} on PATH"));
+    places
+}
+
+/// A path under the home directory, spelled the way the installer spells it.
+fn tilde(path: &Path) -> String {
+    match home().and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
 
 /// The three lifecycle steps the app is allowed to ask for. `install` and
 /// `uninstall` are deliberately absent: writing the login unit is the daemon's
@@ -122,28 +234,88 @@ impl Outcome {
 ///
 /// **This is the one place in this app where a process is started for the
 /// daemon's lifecycle.** It is `whirl daemon …` and nothing else: no `whirld`,
-/// no unit file, no socket, no `kill`. The command is looked up on `PATH`, which
-/// is what makes the app's half testable headlessly with a stand-in on `PATH`.
+/// no unit file, no socket, no `kill`. The command is found by [`resolve`],
+/// which follows the installer's own record rather than a bare `PATH` lookup,
+/// so the daemon the installer installed is the daemon the app runs. A stand-in
+/// named `whirl` on `PATH` is still enough to test the whole path headlessly,
+/// because `PATH` is the search's last resort.
+///
+/// One more process is started, and only to identify a binary that answered the
+/// wrong way: `<path> --version`, when the command did not know the `daemon`
+/// verb. It is not a lifecycle step, and it is never reached on the path that
+/// runs a real daemon.
 pub fn run(verb: Verb) -> Outcome {
+    let Some(program) = resolve() else {
+        return Outcome::Missing(not_found(verb));
+    };
     let arguments = ["daemon", verb.word()];
-    match Command::new(PROGRAM).args(arguments).output() {
-        Ok(output) => classify(
+    match Command::new(&program).args(arguments).output() {
+        Ok(output) => match classify(
             output.status.code(),
             &text(&output.stdout),
             &text(&output.stderr),
-        ),
-        // The command is not installed, or not on this app's PATH. There is
-        // nothing of the daemon's to print, so the app says exactly that rather
-        // than reaching for another route.
-        Err(error) if error.kind() == ErrorKind::NotFound => Outcome::Missing(format!(
-            "`{PROGRAM} daemon {}` could not be run: {PROGRAM} is not on PATH",
-            verb.word()
-        )),
+        ) {
+            // Exit 3 is the CLI's usage error, which is what a binary older
+            // than the `daemon` verb answers with. The app says which binary it
+            // ran, and the version when that binary can name one, rather than
+            // leaving the usage text to look like the app's own mistake.
+            Outcome::Usage(usage) => Outcome::Usage(not_the_daemon_command(verb, &program, &usage)),
+            outcome => outcome,
+        },
         Err(error) => Outcome::Failed(format!(
-            "`{PROGRAM} daemon {}` could not be run: {error}",
+            "`{} daemon {}` could not be run: {error}",
+            program.display(),
             verb.word()
         )),
     }
+}
+
+/// The message for a command that is nowhere the app looks: every place that
+/// was searched, and how to install the daemon.
+fn not_found(verb: Verb) -> String {
+    format!(
+        "`{PROGRAM} daemon {}` could not be run: no {PROGRAM} was found. Looked at {}. Install the daemon with install.sh, which puts it in ~/.local/bin.",
+        verb.word(),
+        searched_places().join(", ")
+    )
+}
+
+/// The message for a `whirl` that answered as if `daemon` were not a verb:
+/// which binary ran, its own version when it can name one, and what the app
+/// needs.
+///
+/// `whirl version` is not the way to identify a binary without a daemon: it is
+/// `Invocation::Ask(Request::Version)` (`whirl`'s `main.rs:143`), so it asks a
+/// running daemon over the socket. `--version` is the static answer a later
+/// build adds; when the binary has it the version is quoted, and when it does
+/// not, the silence is itself the evidence, because the flag is part of the
+/// build the app needs.
+fn not_the_daemon_command(verb: Verb, program: &Path, usage: &str) -> String {
+    let identity = match version_of(program) {
+        Some(version) => format!("`{}` (version {version})", program.display()),
+        None => format!(
+            "`{}`, which reports no version (`--version` answers nothing, so it predates that flag)",
+            program.display()
+        ),
+    };
+    format!(
+        "`{PROGRAM} daemon {}` ran through {identity}, which does not know the `daemon` verb. This build of the app needs a daemon that has the `daemon` verb. It answered: {usage}",
+        verb.word()
+    )
+}
+
+/// A binary's own `--version` line, when that flag answers.
+///
+/// Only a successful, non-empty answer counts: a binary from before the flag
+/// exists exits non-zero or says nothing, and both mean there is no version to
+/// report, which the caller says in words instead.
+fn version_of(program: &Path) -> Option<String> {
+    let output = Command::new(program).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = text(&output.stdout);
+    line.lines().next().map(str::to_string)
 }
 
 /// The CLI's exit code as an outcome, with the words the code's stream carries.
@@ -288,6 +460,29 @@ pub fn finish_quit(plan: QuitPlan) -> Option<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_receipt_binary_line_is_the_one_whose_basename_is_the_command() {
+        // The receipt has one line per installed artefact. Only the `binary`
+        // line for `whirl` is the command; `whirld`, `whirl-worker`, the
+        // comment and the `dir`/`app`/`unit` lines are not.
+        let receipt = "\
+# whirl-ui install receipt. Written by install.sh, read by uninstall.sh.
+dir /home/someone/.local/bin
+binary /home/someone/.local/bin/whirld
+binary /home/someone/.local/bin/whirl
+binary /home/someone/.local/bin/whirl-worker
+app /Applications/Whirl.app
+unit delegated
+";
+        assert_eq!(
+            receipt_binary(receipt),
+            Some(std::path::PathBuf::from("/home/someone/.local/bin/whirl"))
+        );
+        // Absent, empty and binary-less receipts name nothing.
+        assert_eq!(receipt_binary(""), None);
+        assert_eq!(receipt_binary("dir /x\napp /y\n"), None);
+    }
 
     #[test]
     fn the_three_verbs_round_trip_through_their_words() {
