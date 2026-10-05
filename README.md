@@ -166,7 +166,8 @@ is used. Run cargo without that variable and with rustup first on `PATH` to rest
 
     docs/milestones.md    M1 to M4, their exit criteria, and what is deliberately out of scope
     docs/design.md        the visual language, and what each element the design draws would cost in config
-    scripts/make-bundle.sh  Whirl.app, ad-hoc signed, and the archive a release carries
+    scripts/make-bundle.sh  Whirl.app, signed with the local identity, and the archive a release carries
+    scripts/make-signing-identity.sh  the self-signed identity the bundle is signed with, created once
 
 The release bundle is built by hand and by CI on a tag, from the same script:
 `scripts/make-bundle.sh [version]`. There is no Developer ID and no notarization behind it, so a
