@@ -45,10 +45,12 @@ case "$1" in
     ;;
 esac
 case "$2" in
-  status) code=${WHIRL_STUB_STATUS_CODE:-0}; words=${WHIRL_STUB_STATUS_WORDS:-status: com.guruor.whirl running};;
-  start)  code=${WHIRL_STUB_START_CODE:-0};  words=${WHIRL_STUB_START_WORDS:-started: com.guruor.whirl};;
-  stop)   code=${WHIRL_STUB_STOP_CODE:-0};   words=${WHIRL_STUB_STOP_WORDS:-stopped: com.guruor.whirl};;
-  *)      code=3; words="whirl: daemon is not a command, or it has the wrong number of arguments";;
+  status)    code=${WHIRL_STUB_STATUS_CODE:-0};    words=${WHIRL_STUB_STATUS_WORDS:-status: com.guruor.whirl running};;
+  start)     code=${WHIRL_STUB_START_CODE:-0};     words=${WHIRL_STUB_START_WORDS:-started: com.guruor.whirl};;
+  stop)      code=${WHIRL_STUB_STOP_CODE:-0};      words=${WHIRL_STUB_STOP_WORDS:-stopped: com.guruor.whirl};;
+  install)   code=${WHIRL_STUB_INSTALL_CODE:-0};   words=${WHIRL_STUB_INSTALL_WORDS:-installed: com.guruor.whirl};;
+  uninstall) code=${WHIRL_STUB_UNINSTALL_CODE:-0}; words=${WHIRL_STUB_UNINSTALL_WORDS:-uninstalled: com.guruor.whirl};;
+  *)         code=3; words="whirl: daemon is not a command, or it has the wrong number of arguments";;
 esac
 if [ "$code" = 0 ]; then
   printf '%s\n' "$words"
@@ -206,8 +208,35 @@ fn the_verb_mode_runs_the_daemons_own_command_and_quotes_it() {
     assert_eq!(start.status.code(), Some(0), "{}", stderr_of(&start));
     assert_eq!(stdout_of(&start).trim(), "started: com.guruor.whirl");
 
-    // The two calls the app made, in order, and nothing else.
-    assert_eq!(stub.calls(), vec!["daemon status", "daemon start"]);
+    // `install` and `uninstall` are the CLI's own two, added to the four this
+    // mode used to pass through: the app asks the daemon to change the unit
+    // rather than writing one, and the mode is the same call the controls make.
+    let install = app(&stub, &[], &["--daemon", "install"]);
+    assert_eq!(install.status.code(), Some(0), "{}", stderr_of(&install));
+    assert_eq!(stdout_of(&install).trim(), "installed: com.guruor.whirl");
+
+    let uninstall = app(&stub, &[], &["--daemon", "uninstall"]);
+    assert_eq!(
+        uninstall.status.code(),
+        Some(0),
+        "{}",
+        stderr_of(&uninstall)
+    );
+    assert_eq!(
+        stdout_of(&uninstall).trim(),
+        "uninstalled: com.guruor.whirl"
+    );
+
+    // The calls the app made, in order, and nothing else.
+    assert_eq!(
+        stub.calls(),
+        vec![
+            "daemon status",
+            "daemon start",
+            "daemon install",
+            "daemon uninstall"
+        ]
+    );
 }
 
 #[test]
@@ -387,12 +416,14 @@ fn a_command_that_is_nowhere_the_app_looks_names_every_place_it_looked() {
 
 #[test]
 fn the_verb_mode_refuses_a_call_it_cannot_make_a_command_line_from() {
+    // `install` is gone from this list on purpose: ADR 0002 gives the frontend
+    // the daemon's own install verb, so a command line naming it can be made.
     let stub = Stub::new("usage");
     for args in [
         vec!["--daemon"],
-        vec!["--daemon", "install"],
         vec!["--daemon", "restart"],
         vec!["--daemon", "start", "extra"],
+        vec!["--daemon", "install", "extra"],
     ] {
         let output = app(&stub, &[], &args);
         assert_eq!(output.status.code(), Some(3), "{args:?}");
@@ -408,10 +439,11 @@ fn the_verb_mode_refuses_a_call_it_cannot_make_a_command_line_from() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn the_first_run_starts_an_absent_daemon_and_every_later_run_does_not() {
-    // The launch offer. On the first run an absent daemon is started through the
-    // daemon's own command; a run after that offers it and starts nothing. The
-    // two runs share one preference suite, so the second sees the first's record.
+fn the_first_run_installs_an_absent_unit_and_every_later_run_does_not() {
+    // The launch offer. On the first run an absent daemon gets its unit
+    // installed through the daemon's own command; a run after that offers it and
+    // installs nothing. The two runs share one preference suite, so the second
+    // sees the first's record.
     let stub = Stub::new("launch");
     let name = suite("launch");
     forget_suite(&name);
@@ -422,19 +454,19 @@ fn the_first_run_starts_an_absent_daemon_and_every_later_run_does_not() {
             "WHIRL_STUB_STATUS_WORDS",
             "whirl: no supervised daemon: com.guruor.whirl is not loaded in gui/501",
         ),
-        ("WHIRL_STUB_START_WORDS", "started: com.guruor.whirl"),
+        ("WHIRL_STUB_INSTALL_WORDS", "installed: com.guruor.whirl"),
     ];
 
-    // First run: status says the daemon is absent, so it is started.
+    // First run: status says the daemon is absent, so the unit is installed.
     let first = app(&stub, &env, &["--launch"]);
     assert_eq!(first.status.code(), Some(0), "{}", stderr_of(&first));
     let stdout = stdout_of(&first);
-    assert!(stdout.contains("started: com.guruor.whirl"), "{stdout}");
-    assert!(stdout.contains("the daemon was started"), "{stdout}");
-    assert_eq!(stub.calls(), vec!["daemon status", "daemon start"]);
+    assert!(stdout.contains("installed: com.guruor.whirl"), "{stdout}");
+    assert!(stdout.contains("the daemon was installed"), "{stdout}");
+    assert_eq!(stub.calls(), vec!["daemon status", "daemon install"]);
 
     // Second run: the first run is on record, so the daemon is offered and
-    // nothing is started.
+    // nothing is installed. `install` is not called a second time.
     std::fs::remove_file(&stub.log).expect("a fresh log");
     let second = app(&stub, &env, &["--launch"]);
     assert_eq!(second.status.code(), Some(2), "{}", stderr_of(&second));
@@ -443,7 +475,96 @@ fn the_first_run_starts_an_absent_daemon_and_every_later_run_does_not() {
         stdout.contains("the daemon is not running: start it from the menu"),
         "{stdout}"
     );
-    assert_eq!(stub.calls(), vec!["daemon status"], "nothing was started");
+    assert_eq!(stub.calls(), vec!["daemon status"], "nothing was installed");
+
+    forget_suite(&name);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_first_run_records_its_decision_whichever_way_it_went() {
+    // The defect this pins: a first run that found a daemon already running
+    // used to leave no record, so a user who later turned the background off was
+    // reinstalled on the next launch. The decision is recorded on this path too,
+    // so a later run with no unit installs nothing.
+    let stub = Stub::new("launch-present");
+    let name = suite("launch-present");
+    forget_suite(&name);
+
+    // First run: the supervisor already runs it. Nothing is installed, and the
+    // record is still made.
+    let present = app(
+        &stub,
+        &[
+            ("WHIRL_UI_PREFS_SUITE", name.as_str()),
+            ("WHIRL_STUB_STATUS_CODE", "0"),
+            (
+                "WHIRL_STUB_STATUS_WORDS",
+                "status: com.guruor.whirl running",
+            ),
+        ],
+        &["--launch"],
+    );
+    assert_eq!(present.status.code(), Some(0), "{}", stderr_of(&present));
+    assert_eq!(stub.calls(), vec!["daemon status"]);
+
+    // A later run: the user has turned the background off, so there is no unit.
+    // The decision is on record, so nothing is installed and off stays off.
+    std::fs::remove_file(&stub.log).expect("a fresh log");
+    let later = app(
+        &stub,
+        &[
+            ("WHIRL_UI_PREFS_SUITE", name.as_str()),
+            ("WHIRL_STUB_STATUS_CODE", "2"),
+            (
+                "WHIRL_STUB_STATUS_WORDS",
+                "whirl: no supervised daemon: com.guruor.whirl is not loaded in gui/501",
+            ),
+        ],
+        &["--launch"],
+    );
+    assert_eq!(later.status.code(), Some(2), "{}", stderr_of(&later));
+    assert_eq!(
+        stub.calls(),
+        vec!["daemon status"],
+        "off stays off: nothing was installed"
+    );
+
+    forget_suite(&name);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refusing_install_is_surfaced_and_the_decision_stays_recorded() {
+    // Exit 1 is the daemon's own refusal: the app shows its sentence and reports
+    // its code, and the decision is already on record, so a later run does not
+    // try the install again.
+    let stub = Stub::new("launch-refused");
+    let name = suite("launch-refused");
+    forget_suite(&name);
+    let words = "whirl: cannot write the unit at /Users/someone/Library/LaunchAgents/com.guruor.whirl.plist";
+    let env = [
+        ("WHIRL_UI_PREFS_SUITE", name.as_str()),
+        ("WHIRL_STUB_STATUS_CODE", "2"),
+        (
+            "WHIRL_STUB_STATUS_WORDS",
+            "whirl: no supervised daemon: com.guruor.whirl is not loaded in gui/501",
+        ),
+        ("WHIRL_STUB_INSTALL_CODE", "1"),
+        ("WHIRL_STUB_INSTALL_WORDS", words),
+    ];
+
+    let refused = app(&stub, &env, &["--launch"]);
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout_of(&refused));
+    assert_eq!(stderr_of(&refused).trim(), words);
+    assert_eq!(stub.calls(), vec!["daemon status", "daemon install"]);
+
+    // The decision was recorded before the call, so the refusal is not retried:
+    // the next launch asks once and installs nothing.
+    std::fs::remove_file(&stub.log).expect("a fresh log");
+    let later = app(&stub, &env, &["--launch"]);
+    assert_eq!(later.status.code(), Some(2), "{}", stderr_of(&later));
+    assert_eq!(stub.calls(), vec!["daemon status"], "no retry");
 
     forget_suite(&name);
 }
