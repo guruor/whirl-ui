@@ -9,8 +9,9 @@
 //!   first and stays editable afterwards ([`CollectionField`], [`Row::line`]);
 //! - **how often they change** ([`Interval`]): a number and a unit, never the
 //!   raw interval the file stores and never a key name;
-//! - **whether whirl answered** ([`Daemon`]), one line, so nothing on screen
-//!   reads as live while nothing is listening.
+//! - **whether whirl answered, and whether it is paused** ([`Daemon`]), one
+//!   line, so nothing on screen reads as live while nothing is listening and a
+//!   paused daemon never reads as a running one.
 //!
 //! What the window reads and writes is the config file, and the daemon's own
 //! parser judges every write (`crate::config_file`), so a value this window
@@ -186,7 +187,7 @@ pub struct Settings {
     pub target: Option<Target>,
     /// Which of the four panes is on screen.
     pub pane: Pane,
-    /// Whether whirl answered.
+    /// Whether whirl answered, and whether its schedule is suspended.
     pub daemon: Daemon,
     /// The version the running bundle declares, when the app is inside one. The
     /// About pane reads it beside the binary's own version.
@@ -215,8 +216,11 @@ pub struct Settings {
 /// Whether whirl answered, as the one line the window carries about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Daemon {
-    /// The socket answered.
+    /// The socket answered, and the schedule is running.
     Running,
+    /// The socket answered, and the schedule is suspended (`paused: 1` in
+    /// `status`, section 2.5). The daemon is up: nothing failed to answer.
+    Paused,
     /// The socket did not answer, in the client's own words.
     NotRunning(String),
 }
@@ -226,8 +230,19 @@ impl Daemon {
     pub fn line(&self) -> String {
         match self {
             Daemon::Running => "whirl is running".to_string(),
+            Daemon::Paused => "whirl is paused".to_string(),
             Daemon::NotRunning(reason) => format!("whirl is not running: {reason}"),
         }
+    }
+
+    /// Whether the socket answered at all.
+    ///
+    /// A paused daemon answered, so this is what a caller asking "is whirl
+    /// there" wants; only [`Daemon::NotRunning`] is a daemon that did not. It
+    /// is the value beside the line, not the line: the line still tells the two
+    /// apart.
+    pub fn answered(&self) -> bool {
+        !matches!(self, Daemon::NotRunning(_))
     }
 }
 
@@ -804,13 +819,16 @@ impl Settings {
 
     /// The daemon's version and whether it answered, as the About pane states
     /// it: the version only when there is one, and the reason never here, since
-    /// the App pane already carries it.
+    /// the App pane already carries it. A paused daemon answered, so its line
+    /// says paused rather than connected, word for word with the App pane's.
     pub fn daemon_line(&self) -> String {
         match (&self.daemon, &self.daemon_version) {
             (Daemon::Running, Some(version)) => format!("the daemon: {version}, connected"),
             (Daemon::Running, None) => {
                 "the daemon: connected, and it reported no version".to_string()
             }
+            (Daemon::Paused, Some(version)) => format!("the daemon: {version}, paused"),
+            (Daemon::Paused, None) => "the daemon: paused, and it reported no version".to_string(),
             (Daemon::NotRunning(_), _) => "the daemon: not connected".to_string(),
         }
     }
@@ -2049,6 +2067,46 @@ mod tests {
         // shows what it was given and no more.
         assert!(!text.contains("A folder on this Mac"), "{text}");
         assert!(!text.contains("Wallhaven, a remote collection"), "{text}");
+    }
+
+    /// The window's one daemon line carries the paused state, which is the same
+    /// bit the menu bar item's mark reads.
+    #[test]
+    fn the_windows_line_carries_the_paused_state_and_still_says_not_running() {
+        assert_eq!(Daemon::Running.line(), "whirl is running");
+        assert_eq!(Daemon::Paused.line(), "whirl is paused");
+        assert_eq!(
+            Daemon::NotRunning("the daemon stopped answering".to_string()).line(),
+            "whirl is not running: the daemon stopped answering"
+        );
+        // A paused daemon answered, so it is not the not-running form: only a
+        // daemon that said nothing at all is.
+        assert!(Daemon::Running.answered());
+        assert!(Daemon::Paused.answered());
+        assert!(!Daemon::NotRunning("gone".to_string()).answered());
+    }
+
+    /// The paused line reaches the text the window prints, and the About block
+    /// says the same word rather than its `connected` form.
+    #[test]
+    fn the_window_text_carries_the_paused_line_and_the_about_block_agrees() {
+        let (mut settings, _path) = window_from("paused-line", CONFIG);
+        let running = settings.to_text();
+        assert!(running.contains("whirl is running"), "{running}");
+        assert!(
+            running.contains("the daemon: whirl 0.1.0, connected"),
+            "{running}"
+        );
+
+        settings.daemon = Daemon::Paused;
+        let text = settings.to_text();
+        assert!(text.contains("whirl is paused"), "{text}");
+        assert!(!text.contains("whirl is running"), "{text}");
+        assert!(text.contains("the daemon: whirl 0.1.0, paused"), "{text}");
+        assert!(
+            !text.contains("the daemon: whirl 0.1.0, connected"),
+            "{text}"
+        );
     }
 
     #[test]
