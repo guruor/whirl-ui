@@ -201,10 +201,12 @@ impl Stub {
 /// The search's inputs are all controlled here, so no part of the machine leaks
 /// in: `HOME` is the stub's own, `WHIRL_PREFIX` and `WHIRL_UI_RECEIPT` are
 /// removed unless the test passes one, and `PATH` is the stub's by default.
-/// A test overrides any of them by name.
+/// A test overrides any of them by name. `WHIRL_UI_KEYCHAIN` names no store, so
+/// the app this spawns asks no keychain.
 pub(crate) fn app(stub: &Stub, env: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_whirl-ui"));
     command.args(args);
+    command.env("WHIRL_UI_KEYCHAIN", "none");
     command.env("PATH", stub.path());
     command.env("HOME", &stub.home);
     command.env("WHIRL_STUB_LOG", &stub.log);
