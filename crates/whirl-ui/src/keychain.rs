@@ -29,8 +29,16 @@
 //! Every call that runs the tool goes through one place, `Proc::run`, and every
 //! call consults [`STORE_ENV`] first: a run that names no store reaches nothing
 //! by any path, and a run that reaches `Proc::run` at all is one that asked a
-//! store. That is what keeps a test out of the machine's own keychain, and it is
-//! the one seam a check can instrument to prove no test started the tool.
+//! store. That makes this the one seam a check can instrument: make `Proc::run`
+//! panic and a run that reaches a store says so rather than answering quietly.
+//! What keeps a test out is naming no store at all, and that half of the rule is
+//! the harness's: the suites that spawn the app binary, whose own build asks the
+//! platform's store, name `none` in the one helper each of them spawns through.
+//!
+//! A zero from that check is a fact about the run it was taken in, and about no
+//! wider run. Two tests here need a daemon and return early while none answers,
+//! so a run with nothing behind `WHIRL_SOCKET` says nothing about the paths they
+//! drive, and the count is worth quoting only from a run in which they ran.
 //!
 //! The platform is macOS-only today, and the other two CI legs still compile
 //! this module: the `not(macos)` half answers every call with
