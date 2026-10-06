@@ -863,14 +863,14 @@ fn click(id: &str) -> Click {
 
 /// The line the launch offer leaves in the menu, if any.
 ///
-/// Only a start that was attempted has something to report: a daemon the
+/// Only an install that was attempted has something to report: a daemon the
 /// supervisor already runs was not touched, and a daemon that is merely absent
-/// is what the menu's own first line already says. A start that refused is the
-/// case worth keeping on screen, and it keeps the daemon's words.
+/// is what the menu's own first line already says. An install that refused is
+/// the case worth keeping on screen, and it keeps the daemon's words.
 fn launch_report(launched: daemon_cli::Launched) -> Option<String> {
     match launched {
         daemon_cli::Launched::Present(_) | daemon_cli::Launched::Absent(_) => None,
-        daemon_cli::Launched::Started(outcome) => Some(outcome.words().to_string()),
+        daemon_cli::Launched::Installed(outcome) => Some(outcome.words().to_string()),
     }
 }
 
