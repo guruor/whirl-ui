@@ -36,9 +36,9 @@ use eframe::egui::{
 use crate::about;
 use crate::settings::{
     self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE,
-    COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES,
-    PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, START_LABEL,
-    START_LINE, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
+    COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Checks, Daemon, KEY_LINE, Kind,
+    NO_SOURCES, PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE,
+    START_LABEL, START_LINE, SUBTITLE, Settings, SystemPanel, Tone, Unit, WINDOW_TITLE,
 };
 use crate::state::View;
 use crate::theme;
@@ -589,7 +589,7 @@ fn sources(ui: &mut egui::Ui, settings: &mut Settings) {
             }
             None => {
                 for row in &settings.sources.rows {
-                    row_card(ui, row, &mut clicks);
+                    row_card(ui, row, &settings.sources.checks, &mut clicks);
                     ui.add_space(theme::SPACE_SM);
                 }
             }
@@ -699,8 +699,14 @@ fn empty_state(ui: &mut egui::Ui, text: &str) {
     });
 }
 
-/// One source row: its toggle, its line, and the controls that act on it.
-fn row_card(ui: &mut egui::Ui, row: &crate::settings::Row, clicks: &mut Vec<Click>) {
+/// One source row: its toggle, its line, whether whirl can use it, and the
+/// controls that act on it.
+fn row_card(
+    ui: &mut egui::Ui,
+    row: &crate::settings::Row,
+    checks: &Checks,
+    clicks: &mut Vec<Click>,
+) {
     egui::Frame::NONE
         .fill(theme::CANVAS)
         .corner_radius(CornerRadius::same(theme::RADIUS_SM))
@@ -744,7 +750,36 @@ fn row_card(ui: &mut egui::Ui, row: &crate::settings::Row, clicks: &mut Vec<Clic
                     }
                 });
             });
+            // The row's own answer, under the controls: whether whirl can use
+            // this source, and what to do when it cannot. It is indented to
+            // where the row's own line starts, so the pair reads as one row
+            // rather than as two.
+            if let Some(state) = row.state_line(checks) {
+                ui.add_space(theme::SPACE_XS);
+                ui.horizontal(|ui| {
+                    ui.add_space(
+                        theme::TOGGLE_WIDTH + ui.spacing().item_spacing.x + theme::SPACE_SM,
+                    );
+                    ui.label(
+                        RichText::new(state.phrase)
+                            .size(theme::TEXT_CAPTION)
+                            .color(tone_colour(state.tone)),
+                    );
+                });
+            }
         });
+}
+
+/// The colour a row's answer is drawn in: the window's own colours for a state.
+///
+/// The tone belongs to the answer, not to the widget, so the mapping lives here
+/// with the rest of the drawing rather than in the module that builds the words.
+fn tone_colour(tone: Tone) -> Color32 {
+    match tone {
+        Tone::Good => theme::STATE_OK,
+        Tone::Bad => theme::STATE_BAD,
+        Tone::Unknown => theme::TEXT_MUTED,
+    }
 }
 
 /// The Rotation pane: how long each wallpaper stays, as a number and a unit.
@@ -1066,6 +1101,19 @@ mod tests {
         Settings::unreachable(
             "the daemon is not reachable: whirl.sock (absent): No such file or directory (os error 2)",
         )
+    }
+
+    /// Which verdict is drawn in which colour.
+    ///
+    /// This repeats a mapping the drawing owns, and it repeats it on purpose: a
+    /// change to it is a change to what a person sees, and this is the check that
+    /// notices. A verdict that needs acting on may not read like one that is
+    /// fine.
+    #[test]
+    fn the_row_answer_is_drawn_in_the_colour_its_verdict_asks_for() {
+        assert_eq!(tone_colour(Tone::Good), theme::STATE_OK);
+        assert_eq!(tone_colour(Tone::Bad), theme::STATE_BAD);
+        assert_eq!(tone_colour(Tone::Unknown), theme::TEXT_MUTED);
     }
 
     /// A live view, for the window's status line: the keys 2.10 prints, in its

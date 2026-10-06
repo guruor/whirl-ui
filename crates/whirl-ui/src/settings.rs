@@ -41,7 +41,7 @@
 
 use std::path::{Path, PathBuf};
 
-use whirlui_client::protocol::parse_plan_record;
+use whirlui_client::protocol::{SourceRecord, parse_plan_record};
 
 use crate::about;
 use crate::config_file::{self, FileSource, INTERVAL_KEY, Target};
@@ -176,6 +176,13 @@ pub const SAVED_KEY: &str = "the key is in your system's password store and the 
 /// The one source kind with a secret behind it, in whirl's own spelling.
 const WALLHAVEN: &str = "wallhaven";
 
+/// The counter a source's record carries the count of its candidates under.
+///
+/// The record's counter group is the daemon's own (`crates/whirl-worker`'s
+/// `Counters::pairs`: `candidates`, `admitted`, then one per rejection), and this
+/// is the one that answers "how many does it hold".
+const CANDIDATES: &str = "candidates";
+
 /// The most sub-folders the chooser lists at once.
 const CHILD_LIMIT: usize = 200;
 
@@ -201,6 +208,14 @@ pub struct Settings {
     /// The last release check, and what it found. `None` until the button is
     /// pressed: the app never checks on its own.
     pub check: Option<about::Check>,
+    /// The platform store's answer about the Wallhaven key, asked once when the
+    /// window is built: `Ok(true)` when an item is there, `Ok(false)` when none
+    /// is, and the reason when the store could not be asked.
+    ///
+    /// Kept here so an edit rebuilds a row without asking the platform a second
+    /// time, and so a window a test opens is built from the store the test
+    /// handed in rather than from the machine's own keychain.
+    pub key_saved: Result<bool, String>,
     /// Where the wallpapers come from.
     pub sources: Sources,
     /// How often they change.
@@ -255,6 +270,32 @@ pub struct Sources {
     pub problem: Option<String>,
     /// The last edit, and what the window says about it.
     pub outcome: Option<Outcome>,
+    /// What the daemon said when it was asked to check these sources, so each
+    /// row can say whether it is usable and why not.
+    pub checks: Checks,
+}
+
+/// The daemon's `config check`, as the rows read it.
+///
+/// The check answers with one `source:` record per source, carrying that
+/// source's counters and its own `reason`, or the reason the check could not be
+/// made at all (whirl's `docs/architecture.md` 2.6). A row whose source the
+/// check did not name says so rather than saying nothing: silence would read as
+/// "usable", which is the one thing nobody has said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Checks {
+    /// The check landed, and these are the records the daemon sent, in its order.
+    Read(Vec<SourceRecord>),
+    /// No check: the daemon did not answer, and this is the client's own reason.
+    Unanswered(String),
+}
+
+impl Default for Checks {
+    /// A window with no check at all, which says every row has not been checked
+    /// rather than inventing one.
+    fn default() -> Self {
+        Checks::Read(Vec::new())
+    }
 }
 
 /// One source, as the window describes it.
@@ -318,6 +359,49 @@ impl KeyState {
     }
 }
 
+/// One row's second line: what the daemon's check said about that source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct State {
+    /// The sentence, in a person's words.
+    pub phrase: String,
+    /// How the sentence should read.
+    pub tone: Tone,
+}
+
+/// Whether a row's state is something a person can use as it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// The source works.
+    Good,
+    /// The source cannot be used, and the phrase says what to do about it.
+    Bad,
+    /// Nothing is known yet: the check has not landed.
+    Unknown,
+}
+
+impl State {
+    fn good(phrase: String) -> State {
+        State {
+            phrase,
+            tone: Tone::Good,
+        }
+    }
+
+    fn bad(phrase: String) -> State {
+        State {
+            phrase,
+            tone: Tone::Bad,
+        }
+    }
+
+    fn unknown(phrase: String) -> State {
+        State {
+            phrase,
+            tone: Tone::Unknown,
+        }
+    }
+}
+
 impl Row {
     /// The row, described in a person's words.
     pub fn line(&self) -> String {
@@ -347,6 +431,86 @@ impl Row {
     /// window's `[x]` and the text dump's `[x]` are the same character.
     pub fn text_line(&self) -> String {
         format!("[{}] {}", if self.enabled { "x" } else { " " }, self.line())
+    }
+
+    /// The row's second line: whether the source can be used, and why not.
+    ///
+    /// The words are built from the daemon's own `config check` record for this
+    /// source, so the window states what the daemon measured rather than a
+    /// second opinion about the same folder or collection. Every phrase names
+    /// what is wrong and what to do about it; a counter on its own is not an
+    /// answer a person can act on.
+    pub fn state_line(&self, checks: &Checks) -> Option<State> {
+        let record = match checks {
+            Checks::Unanswered(reason) => {
+                return Some(State::unknown(no_answer(self.thing(), reason)));
+            }
+            Checks::Read(records) => records.iter().find(|record| record.id == self.id),
+        };
+        let Some(record) = record else {
+            // The check landed before this source did. Saying nothing here would
+            // read as "usable", which is the one thing nobody has said.
+            return Some(State::unknown(format!(
+                "whirl has not checked this {} yet: it was added or changed after the check, and \
+                 the next one covers it",
+                self.thing()
+            )));
+        };
+        Some(match &record.reason {
+            None => self.holds(record),
+            Some(reason) => State::bad(format!(
+                "whirl cannot use this {}: {}",
+                self.thing(),
+                self.refusal(reason)
+            )),
+        })
+    }
+
+    /// What the row is about, in a person's words.
+    ///
+    /// The two kinds of row hold different things, and a failure reads
+    /// differently for each: a folder is a place on this Mac and a collection is
+    /// something wallhaven serves, so the row names which it means.
+    fn thing(&self) -> &'static str {
+        match self.kind {
+            Kind::Folder { .. } => "folder",
+            Kind::Wallhaven { .. } => "collection",
+        }
+    }
+
+    /// The words when the check ran: how much the source holds.
+    fn holds(&self, record: &SourceRecord) -> State {
+        let count = counter(record, CANDIDATES);
+        let holding = match &self.kind {
+            Kind::Folder { .. } => picture(count),
+            Kind::Wallhaven { key, .. } => match key {
+                KeyState::Saved => format!("{} with the saved key", wallpaper(count)),
+                _ => format!("{} without a key, so it is public", wallpaper(count)),
+            },
+        };
+        // A source that reads with nothing in it is not one whirl will ever
+        // change the wallpaper from, which is worth the same tone as a refusal.
+        let words = format!("whirl can read this {}, and it {holding}", self.thing());
+        if count == 0 {
+            State::bad(words)
+        } else {
+            State::good(words)
+        }
+    }
+
+    /// The words when the check refused the source, from the daemon's own
+    /// reason.
+    ///
+    /// The daemon's reason names an internal key path and, for a folder, the
+    /// operating system's own words for the failure; both are turned into the
+    /// sentence a person acts on. A reason this code does not know is quoted
+    /// rather than replaced, so an unfamiliar failure still reaches the screen.
+    fn refusal(&self, reason: &str) -> String {
+        let message = without_field(reason);
+        match &self.kind {
+            Kind::Folder { .. } => folder_refusal(message),
+            Kind::Wallhaven { key, .. } => collection_refusal(message, key),
+        }
     }
 
     /// The folder the row's `Change…` control replaces, when the row is a folder
@@ -749,17 +913,40 @@ impl Settings {
     ///
     /// The file under [`Settings::target`] is where the two settings come from,
     /// because the file is what the window edits; the daemon's `config check`
-    /// supplies the rotation it is using now, which the window cannot see in the
-    /// file. With no readable file the fields are empty and the reason is on
-    /// screen rather than being papered over with a default.
+    /// supplies the rotation it is using now and what it says about each source,
+    /// which the window cannot see in the file. With no readable file the fields
+    /// are empty and the reason is on screen rather than being papered over with
+    /// a default.
     pub fn from_answers(answers: &Answers) -> Settings {
+        Settings::from_answers_with(answers, &Keychain)
+    }
+
+    /// The same window, built from the store the caller hands in.
+    ///
+    /// The pair exists so that every key state a row can show is reachable from
+    /// a test without the machine's own keychain: [`Settings::from_answers`]
+    /// asks the platform's store ([`Keychain`]) and this asks whatever it is
+    /// handed.
+    pub fn from_answers_with(answers: &Answers, store: &dyn Store) -> Settings {
         let target = target_of(answers);
         let read = target
             .as_ref()
             .map(|target| config_file::read_file(&target.path));
+        // The store is asked once, and only when a Wallhaven row is on screen,
+        // because the question costs a process: see `rows_of`.
+        let key_saved = match read.as_ref().and_then(|read| read.as_ref().ok()) {
+            Some(state) if state.sources.iter().any(|source| source.kind == WALLHAVEN) => {
+                store.holds_key()
+            }
+            _ => Ok(false),
+        };
         let (rows, problem, stored) = match &read {
             None => (Vec::new(), Some(config_file::NO_PATH.to_string()), None),
-            Some(Ok(state)) => (rows_of(&state.sources), None, Some(state.interval_seconds)),
+            Some(Ok(state)) => (
+                rows_of(&state.sources, &key_saved),
+                None,
+                Some(state.interval_seconds),
+            ),
             Some(Err(error)) => (Vec::new(), Some(error.to_string()), None),
         };
         let in_use = plan_interval(answers);
@@ -778,10 +965,12 @@ impl Settings {
             // nothing here reaches the network.
             check: None,
             daemon_action: None,
+            key_saved,
             sources: Sources {
                 rows,
                 problem,
                 outcome: None,
+                checks: checks_of(answers),
             },
             interval,
             picker: None,
@@ -890,7 +1079,12 @@ impl Settings {
         let result = self
             .writing_target()
             .and_then(|path| config_file::add_source(path, document));
+        let landed = result.is_ok();
         self.record_sources("Add a folder", SAVED_FILE, result);
+        if landed {
+            // The check was made before this source existed.
+            self.forget_check(id);
+        }
     }
 
     /// Open the field that asks for a new Wallhaven source's collection address.
@@ -953,20 +1147,26 @@ impl Settings {
                 return;
             }
         };
+        let affected = self
+            .collection
+            .for_source
+            .clone()
+            .unwrap_or_else(|| self.free_id(WALLHAVEN));
         let result = match self.collection.for_source.clone() {
             None => {
-                let id = self.free_id(WALLHAVEN);
-                let document = config_file::wallhaven_source(&id, keychain::LABEL, &pair);
+                let document = config_file::wallhaven_source(&affected, keychain::LABEL, &pair);
                 self.writing_target()
                     .and_then(|path| config_file::add_source(path, document))
             }
-            Some(id) => self
+            Some(_) => self
                 .writing_target()
-                .and_then(|path| config_file::set_source_collection(path, &id, &pair)),
+                .and_then(|path| config_file::set_source_collection(path, &affected, &pair)),
         };
         let saved = result.is_ok();
         self.record_sources(control, SAVED_FILE, result);
         if saved {
+            // What the check said was about the address this source used to name.
+            self.forget_check(&affected);
             self.collection.problem = None;
             self.collection.open = false;
             if adding {
@@ -995,7 +1195,12 @@ impl Settings {
         let result = self
             .writing_target()
             .and_then(|path| config_file::set_source_folder(path, id, folder));
+        let landed = result.is_ok();
         self.record_sources("Change folder", SAVED_FILE, result);
+        if landed {
+            // What the check said was about the folder this source used to read.
+            self.forget_check(id);
+        }
     }
 
     /// Take a source out of the file.
@@ -1029,8 +1234,15 @@ impl Settings {
                 .and_then(|path| config_file::set_wallhaven_key_ref(path, keychain::LABEL)),
         };
         let saved = result.is_ok();
+        if saved {
+            // The store holds the item now, so the rows say a key is saved
+            // without the platform being asked a second time.
+            self.key_saved = Ok(true);
+        }
         self.record_sources("Wallhaven key", SAVED_KEY, result);
         if saved {
+            // What the check said about a collection was about the old key.
+            self.forget_wallhaven_checks();
             self.key.token.clear();
             self.key.open = false;
         }
@@ -1138,7 +1350,7 @@ impl Settings {
     ) {
         let outcome = match result {
             Ok(written) => {
-                self.sources.rows = rows_of(&written.sources);
+                self.sources.rows = rows_of(&written.sources, &self.key_saved);
                 self.sources.problem = None;
                 Outcome::Saved {
                     control: control.to_string(),
@@ -1151,6 +1363,31 @@ impl Settings {
             },
         };
         self.sources.outcome = Some(outcome);
+    }
+
+    /// Drop one source's record, because it changed after the check was made.
+    ///
+    /// The row then says it has not been checked rather than quoting a check
+    /// about the source as it was: a folder that moved is not the folder the
+    /// daemon counted pictures in.
+    fn forget_check(&mut self, id: &str) {
+        if let Checks::Read(records) = &mut self.sources.checks {
+            records.retain(|record| record.id != id);
+        }
+    }
+
+    /// Drop every Wallhaven row's record, because the key they resolve changed.
+    fn forget_wallhaven_checks(&mut self) {
+        let wallhaven: Vec<String> = self
+            .sources
+            .rows
+            .iter()
+            .filter(|row| matches!(row.kind, Kind::Wallhaven { .. }))
+            .map(|row| row.id.clone())
+            .collect();
+        for id in wallhaven {
+            self.forget_check(&id);
+        }
     }
 
     /// The folders inside the chooser's folder, or why it could not be listed.
@@ -1246,6 +1483,11 @@ impl Settings {
             None => {
                 for row in &self.sources.rows {
                     out.push_str(&format!("  {}\n", row.text_line()));
+                    // The row's own line about whether it can be used, above the
+                    // controls that change it.
+                    if let Some(state) = row.state_line(&self.sources.checks) {
+                        out.push_str(&format!("      {}\n", state.phrase));
+                    }
                     let mut buttons = Vec::new();
                     if row.changeable_folder().is_some() {
                         buttons.push("Change…");
@@ -1329,22 +1571,50 @@ impl Settings {
     }
 }
 
-/// The rows for a file's sources, each Wallhaven one beside what the store says.
+/// The store the window asks whether the Wallhaven key is saved.
 ///
-/// The store is asked once, and only when a Wallhaven row is on screen, because
-/// the question costs a process; a source that names a key this app does not
-/// manage is not this app's to resolve and the store is not asked about it.
-fn rows_of(sources: &[FileSource]) -> Vec<Row> {
-    let mut store: Option<Result<bool, String>> = None;
+/// A seam, not a wrapper: [`Settings::from_answers`] asks the platform's own
+/// store through [`Keychain`], and [`Settings::from_answers_with`] asks whatever
+/// it is handed, so every key state a row can show is reachable from a test that
+/// never reads the machine's keychain. The question is whether an item is there,
+/// never what it holds.
+pub trait Store {
+    /// `Ok(true)` when the item is there, `Ok(false)` when it is not, and the
+    /// reason when the store could not be asked.
+    fn holds_key(&self) -> Result<bool, String>;
+}
+
+/// The store this app ships: the platform's own keychain, through the one call
+/// that asks for presence and never for bytes ([`crate::keychain::exists`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Keychain;
+
+impl Store for Keychain {
+    fn holds_key(&self) -> Result<bool, String> {
+        keychain::exists().map_err(|error| error.to_string())
+    }
+}
+
+/// The daemon's check, parsed from the answer it gave.
+fn checks_of(answers: &Answers) -> Checks {
+    match &answers.config_check {
+        Ok(lines) => Checks::Read(whirlui_client::ConfigCheck::from_lines(lines).records),
+        Err(reason) => Checks::Unanswered(reason.clone()),
+    }
+}
+
+/// The rows for a file's sources, each Wallhaven one beside what the store said.
+///
+/// The store's answer is the caller's, asked once and only when a Wallhaven row
+/// is on screen, because the question costs a process; see
+/// [`Settings::from_answers_with`].
+fn rows_of(sources: &[FileSource], exists: &Result<bool, String>) -> Vec<Row> {
     let mut rows = Vec::with_capacity(sources.len());
     for source in sources {
         let kind = if source.kind == WALLHAVEN {
-            let exists = store
-                .get_or_insert_with(|| keychain::exists().map_err(|error| error.to_string()))
-                .clone();
             Kind::Wallhaven {
                 collection: source.collection.clone(),
-                key: key_state(source.key_ref.as_deref(), exists),
+                key: key_state(source.key_ref.as_deref(), exists.clone()),
             }
         } else {
             Kind::Folder {
@@ -1358,6 +1628,179 @@ fn rows_of(sources: &[FileSource]) -> Vec<Row> {
         });
     }
     rows
+}
+
+/// The words for a check that did not land, from the client's own reason.
+///
+/// A read that ran out of time is the one case worth saying in the window's own
+/// words: the client's timeout is the socket's, so its reason is the platform's
+/// io error for a read that had none, which is not a sentence a person can act
+/// on.
+fn no_answer(thing: &str, reason: &str) -> String {
+    if is_a_timeout(reason) {
+        return format!(
+            "whirl has not checked this {thing} yet: the daemon did not answer in time, and a \
+             check can take minutes; open this window again in a moment"
+        );
+    }
+    format!("whirl has not checked this {thing} yet: {reason}")
+}
+
+/// Whether the client's reason is a read that ran out of time.
+///
+/// The client's timeout is the socket's read timeout, equal to the daemon's own
+/// worker deadline (whirlui-client's `COMMAND_TIMEOUT`), so the reason is the
+/// platform's io error for a read with nothing to read: macOS and Linux both say
+/// "Resource temporarily unavailable", and a timeout built in Rust says
+/// "timed out".
+fn is_a_timeout(reason: &str) -> bool {
+    [
+        "timed out",
+        "Resource temporarily unavailable",
+        "would block",
+        "WouldBlock",
+    ]
+    .iter()
+    .any(|words| reason.contains(words))
+}
+
+/// A record's counter, or zero when the record carries no group at all.
+fn counter(record: &SourceRecord, name: &str) -> u64 {
+    record
+        .counters
+        .iter()
+        .find(|(counter, _)| counter == name)
+        .map(|(_, value)| *value)
+        .unwrap_or(0)
+}
+
+/// How many pictures a folder holds, in a person's words.
+fn picture(count: u64) -> String {
+    match count {
+        0 => "holds no pictures".to_string(),
+        1 => "holds one picture".to_string(),
+        count => format!("holds {count} pictures"),
+    }
+}
+
+/// How many wallpapers a collection holds, in a person's words.
+fn wallpaper(count: u64) -> String {
+    match count {
+        0 => "holds no wallpapers".to_string(),
+        1 => "holds one wallpaper".to_string(),
+        count => format!("holds {count} wallpapers"),
+    }
+}
+
+/// A reason without the daemon's own `sources[id=<id>].<field> (line N): ` prefix.
+///
+/// The prefix names an internal key path; what follows it is the sentence a
+/// person acts on. A reason with no prefix is returned as it is.
+fn without_field(reason: &str) -> &str {
+    match reason.strip_prefix("sources[") {
+        Some(rest) => rest.split_once(": ").map_or(reason, |(_, message)| message),
+        None => reason,
+    }
+}
+
+/// Why a folder source cannot be used, in the words a person acts on.
+///
+/// The daemon reports the operating system's own words for the failure, so the
+/// mapping is over those words: a missing folder and an unreadable one are the
+/// two the daemon can tell apart, and they need different actions from the
+/// person. A failure this does not know is quoted rather than replaced.
+fn folder_refusal(message: &str) -> String {
+    if message.contains("no configured path can be read") {
+        if message.contains("No such file or directory") || message.contains("cannot find the file")
+        {
+            return "the folder is not there; check the path, or remove this row".to_string();
+        }
+        if message.contains("Permission denied") {
+            return "the folder is there and cannot be read: permission denied".to_string();
+        }
+        if message.contains("is a symlink") {
+            return "the folder is a link to another one, and whirl does not follow those; name \
+                    the folder itself"
+                .to_string();
+        }
+        if message.contains("is not a directory") {
+            return "that path is a file, not a folder".to_string();
+        }
+        return "whirl cannot read the folder".to_string();
+    }
+    if message.contains("requires an API key") {
+        return "it needs a key, and none is saved".to_string();
+    }
+    message.to_string()
+}
+
+/// Why a Wallhaven source cannot be used, in the words a person acts on.
+///
+/// The daemon names the failure first (`not_found:`, `unauthorized:`, and the
+/// rest of its own vocabulary) and the key the request carried is this window's
+/// to know, so the two together say whether the collection is missing, private
+/// and keyless, or holding a key the API refused.
+fn collection_refusal(message: &str, key: &KeyState) -> String {
+    if message.contains("requires an API key") {
+        return "it needs a key, and none is saved: use Enter key… to add one".to_string();
+    }
+    match message.split_once(':') {
+        Some(("not_found", detail)) => match key {
+            KeyState::Saved => format!(
+                "wallhaven answered 404 with the saved key, so the address names no collection: \
+                 check it{}",
+                tail(detail)
+            ),
+            _ => format!(
+                "wallhaven answered 404 without a key: the address may name no collection, and a \
+                 private one needs a key{}",
+                tail(detail)
+            ),
+        },
+        Some(("unauthorized", detail)) => match key {
+            KeyState::Saved => format!(
+                "the saved key was refused: wallhaven answered 401{}",
+                tail(detail)
+            ),
+            _ => format!(
+                "the collection needs a key and none is saved: wallhaven answered 401{}",
+                tail(detail)
+            ),
+        },
+        Some(("forbidden", detail)) => format!(
+            "wallhaven refused the request: it answered 403{}",
+            tail(detail)
+        ),
+        Some(("rate_limited", detail)) => format!(
+            "wallhaven is rate-limiting this app: it answered 429, and the check works later{}",
+            tail(detail)
+        ),
+        Some(("unavailable", detail)) => {
+            format!("whirl could not reach wallhaven: {}", detail.trim_start())
+        }
+        Some(("malformed", detail)) => format!(
+            "wallhaven answered something whirl could not read: {}",
+            detail.trim_start()
+        ),
+        _ => message.to_string(),
+    }
+}
+
+/// The API's own words after the daemon's status sentence, as a tail a phrase
+/// can carry, or nothing when the API said nothing.
+fn tail(detail: &str) -> String {
+    let detail = detail.trim();
+    match detail.is_empty() {
+        true => String::new(),
+        false => {
+            // The daemon renders `answered <status>: <the API's error>`, so the
+            // API's own words are what follows the status.
+            match detail.split_once(": ") {
+                Some((_, api)) => format!(" ({api})"),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 /// What is known about a Wallhaven key, from the file's label and the store's
@@ -1482,6 +1925,41 @@ fn plan_interval(answers: &Answers) -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// A store a test owns, so that a window built here never asks the machine's
+    /// own keychain: it answers whatever the test says.
+    struct Double(Result<bool, String>);
+
+    impl Store for Double {
+        fn holds_key(&self) -> Result<bool, String> {
+            self.0.clone()
+        }
+    }
+
+    /// A store holding no key.
+    fn no_key() -> Double {
+        Double(Ok(false))
+    }
+
+    /// A store holding a key, which is the state a collection request sends one
+    /// in.
+    fn a_key() -> Double {
+        Double(Ok(true))
+    }
+
+    /// A store that records whether it was asked at all.
+    #[derive(Default)]
+    struct Recording {
+        asked: std::cell::Cell<bool>,
+        holds: bool,
+    }
+
+    impl Store for Recording {
+        fn holds_key(&self) -> Result<bool, String> {
+            self.asked.set(true);
+            Ok(self.holds)
+        }
+    }
+
     /// A config the parser accepts, with a comment key to preserve.
     const CONFIG: &str = r#"{
   "_comment_1": "keep me",
@@ -1506,7 +1984,7 @@ mod tests {
     /// The window as it opens when the daemon answered, but on a file of our own.
     fn window_from_scratch(tag: &str, text: &str) -> (Settings, PathBuf) {
         let (_directory, path) = scratch(tag, text);
-        let settings = Settings::from_answers(&settings_answers_for(&path));
+        let settings = Settings::from_answers_with(&settings_answers_for(&path), &no_key());
         (settings, path)
     }
 
@@ -1876,11 +2354,14 @@ mod tests {
         std::fs::create_dir_all(inside.join("holiday")).expect("another");
         std::fs::write(inside.join("not-a-folder.txt"), "x").expect("a file, not a folder");
 
-        let mut settings = Settings::from_answers(&Answers::live(
-            vec![format!("config: {}", path.display())],
-            Vec::new(),
-            Vec::new(),
-        ));
+        let mut settings = Settings::from_answers_with(
+            &Answers::live(
+                vec![format!("config: {}", path.display())],
+                Vec::new(),
+                Vec::new(),
+            ),
+            &no_key(),
+        );
         settings.open_picker(None);
         settings.picker_into(inside.clone());
 
@@ -1922,11 +2403,14 @@ mod tests {
         let written = folder.to_str().expect("a path").replace('\\', "/");
         std::fs::write(&path, CONFIG.replace("/tmp/walls", &written)).expect("the fixture");
 
-        let mut settings = Settings::from_answers(&Answers::live(
-            vec![format!("config: {}", path.display())],
-            Vec::new(),
-            Vec::new(),
-        ));
+        let mut settings = Settings::from_answers_with(
+            &Answers::live(
+                vec![format!("config: {}", path.display())],
+                Vec::new(),
+                Vec::new(),
+            ),
+            &no_key(),
+        );
         settings.open_picker(Some("pictures".to_string()));
         let shown = settings
             .picker
@@ -2038,7 +2522,7 @@ mod tests {
     #[test]
     fn the_window_with_no_config_and_no_daemon_says_both_reasons() {
         let reason = "the daemon is not reachable: whirl.sock (absent): No such file or directory (os error 2)";
-        let mut settings = Settings::unreachable(reason);
+        let mut settings = Settings::from_answers_with(&Answers::unreachable(reason), &no_key());
         // The state a window on a machine with neither a daemon nor a locatable
         // config file is in: nothing was read, so nothing is shown for it.
         settings.target = None;
@@ -2046,6 +2530,7 @@ mod tests {
             rows: Vec::new(),
             problem: Some(config_file::NO_PATH.to_string()),
             outcome: None,
+            checks: Checks::default(),
         };
         settings.interval = Interval::opening(None);
 
@@ -2113,7 +2598,7 @@ mod tests {
     fn a_config_file_that_cannot_be_read_says_so_instead_of_showing_no_sources() {
         let (directory, _path) = scratch("missing", CONFIG);
         let missing = directory.join("absent.json");
-        let settings = Settings::from_answers(&settings_answers_for(&missing));
+        let settings = Settings::from_answers_with(&settings_answers_for(&missing), &no_key());
         let text = settings.to_text();
         assert!(settings.sources.rows.is_empty());
         assert!(text.contains("absent.json"), "{text}");
@@ -2126,7 +2611,8 @@ mod tests {
     #[test]
     fn a_token_typed_into_the_window_reaches_no_line_and_not_the_text() {
         let fake = "fake-token-not-a-real-key";
-        let mut settings = Settings::from_answers(&Answers::unreachable("no daemon"));
+        let mut settings =
+            Settings::from_answers_with(&Answers::unreachable("no daemon"), &no_key());
         settings.key.open = true;
         settings.key.token = fake.to_string();
         assert!(
@@ -2248,5 +2734,364 @@ mod tests {
                 "platform: macos".to_string(),
             ],
         )
+    }
+
+    // -- what the panel says about a source ---------------------------------
+    //
+    // Every collection state below is an `Answers` value built from the daemon's
+    // own record lines, so no test here opens a socket: `Answers` is the double,
+    // and the only code that can produce a live one is `crate::dump`, which no
+    // test in this module calls. The key states come from a store a test hands
+    // in, so the machine's keychain is never asked either.
+
+    /// A file with one folder and one collection: the two kinds of row.
+    const TWO: &str = r#"{
+  "config_schema": 1,
+  "sources": [
+    {"id": "pictures", "kind": "local", "paths": ["/tmp/walls"]},
+    {"id": "space", "kind": "wallhaven", "collection": "alice/12345", "api_key_ref": "keychain:whirl-wallhaven"}
+  ]
+}"#;
+
+    /// A file with one folder and no collection, so the store is never asked.
+    const ONE_FOLDER: &str = r#"{
+  "config_schema": 1,
+  "sources": [{"id": "pictures", "kind": "local", "paths": ["/tmp/walls"]}]
+}"#;
+
+    /// A `source:` record as the daemon sends one, in the two shapes 2.6 has: a
+    /// source it could check (the counter group and `reason=-`) and one it could
+    /// not (`enabled=0` with the reason and no group).
+    ///
+    /// Both shapes are the daemon's own: the first is pinned byte for byte by
+    /// `crates/whirld/tests/control_socket.rs`'s `config_check_lines`, and the
+    /// second is what `crates/whirl-worker/src/pipeline.rs`'s `disabled_record`
+    /// writes.
+    fn record(id: &str, kind: &str, candidates: u64, reason: Option<&str>) -> String {
+        match reason {
+            None => format!(
+                "source: {id} {kind} weight=1 enabled=1 last=- candidates={candidates} \
+                 admitted=0 rejected_resolution=0 rejected_ratio=0 rejected_size=0 \
+                 rejected_type=0 rejected_dedupe=0 reason=-"
+            ),
+            Some(reason) => {
+                format!("source: {id} {kind} weight=1 enabled=0 last=- reason={reason}")
+            }
+        }
+    }
+
+    /// The words the window shows for the source the file names `id`, with the
+    /// daemon's answer being `check`.
+    fn state_of(
+        tag: &str,
+        config: &str,
+        check: Vec<String>,
+        id: &str,
+        store: &dyn Store,
+    ) -> String {
+        let (_directory, path) = scratch(tag, config);
+        let answers = Answers::live(
+            vec![format!("config: {}", path.display())],
+            check,
+            Vec::new(),
+        );
+        let settings = Settings::from_answers_with(&answers, store);
+        settings
+            .sources
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .expect("the row of the source the file names")
+            .state_line(&settings.sources.checks)
+            .expect("every row says what is known about its source")
+            .phrase
+    }
+
+    #[test]
+    fn a_folder_that_holds_pictures_says_how_many() {
+        let words = state_of(
+            "holds",
+            TWO,
+            vec![record("pictures", "local", 412, None)],
+            "pictures",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl can read this folder, and it holds 412 pictures"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_holds_nothing_says_so() {
+        let words = state_of(
+            "empty",
+            TWO,
+            vec![record("pictures", "local", 0, None)],
+            "pictures",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl can read this folder, and it holds no pictures"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_says_so() {
+        // `Local::validate`'s reason, word for word: the key it refuses, then the
+        // operating system's own words for the failure.
+        let reason = "sources[id=pictures].paths (line 4): no configured path can be read: \
+                      /tmp/walls: No such file or directory (os error 2)";
+        let words = state_of(
+            "gone",
+            TWO,
+            vec![record("pictures", "local", 0, Some(reason))],
+            "pictures",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this folder: the folder is not there; check the path, or remove this \
+             row"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_read_says_so_separately_from_one_that_is_missing() {
+        let reason = "sources[id=pictures].paths (line 4): no configured path can be read: \
+                      /tmp/walls: Permission denied (os error 13)";
+        let words = state_of(
+            "locked",
+            TWO,
+            vec![record("pictures", "local", 0, Some(reason))],
+            "pictures",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this folder: the folder is there and cannot be read: permission \
+             denied"
+        );
+    }
+
+    #[test]
+    fn a_collection_that_answers_without_a_key_is_public_and_says_how_many_it_holds() {
+        let words = state_of(
+            "public",
+            TWO,
+            vec![record("space", "wallhaven", 97, None)],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl can read this collection, and it holds 97 wallpapers without a key, so it is \
+             public"
+        );
+    }
+
+    #[test]
+    fn a_collection_that_answers_with_a_saved_key_says_the_key_is_in_use() {
+        let words = state_of(
+            "with-key",
+            TWO,
+            vec![record("space", "wallhaven", 97, None)],
+            "space",
+            &a_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl can read this collection, and it holds 97 wallpapers with the saved key"
+        );
+    }
+
+    #[test]
+    fn a_collection_that_does_not_answer_says_it_could_not_be_reached() {
+        // `http.rs`'s own words for a request that got nothing back.
+        let reason = "unavailable: no response from \
+                      https://wallhaven.cc/api/v1/collections/alice/12345?page=1: curl: (6) Could \
+                      not resolve host: wallhaven.cc";
+        let words = state_of(
+            "offline",
+            TWO,
+            vec![record("space", "wallhaven", 0, Some(reason))],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this collection: whirl could not reach wallhaven: no response from \
+             https://wallhaven.cc/api/v1/collections/alice/12345?page=1: curl: (6) Could not \
+             resolve host: wallhaven.cc"
+        );
+    }
+
+    #[test]
+    fn a_private_collection_with_no_key_says_a_key_is_what_it_needs() {
+        let reason = "not_found: https://wallhaven.cc/api/v1/collections/alice/12345 answered \
+                      404: Nothing here";
+        let words = state_of(
+            "private",
+            TWO,
+            vec![record("space", "wallhaven", 0, Some(reason))],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this collection: wallhaven answered 404 without a key: the address \
+             may name no collection, and a private one needs a key (Nothing here)"
+        );
+    }
+
+    #[test]
+    fn a_collection_whose_saved_key_was_refused_says_so() {
+        let reason = "unauthorized: https://wallhaven.cc/api/v1/collections/alice/12345 answered \
+                      401: Unauthorized";
+        let words = state_of(
+            "refused",
+            TWO,
+            vec![record("space", "wallhaven", 0, Some(reason))],
+            "space",
+            &a_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this collection: the saved key was refused: wallhaven answered 401 \
+             (Unauthorized)"
+        );
+    }
+
+    #[test]
+    fn a_collection_whose_purity_needs_a_key_says_a_key_is_what_it_needs() {
+        // `Wallhaven::refuse`'s reason for a purity only a key can ask for (2.4).
+        let reason = "sources[id=space].purity (line 3): purity=111 requires an API key, none \
+                      resolvable (checked env WHIRL_WALLHAVEN_API_KEY, keychain label \
+                      'whirl-wallhaven')";
+        let words = state_of(
+            "sketchy",
+            TWO,
+            vec![record("space", "wallhaven", 0, Some(reason))],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl cannot use this collection: it needs a key, and none is saved: use Enter key… \
+             to add one"
+        );
+    }
+
+    #[test]
+    fn a_source_added_since_the_check_says_it_has_not_been_checked() {
+        // The check landed and named the folder, and the collection was added
+        // after it: the window must not read that as "the collection is fine".
+        let words = state_of(
+            "new",
+            TWO,
+            vec![record("pictures", "local", 412, None)],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl has not checked this collection yet: it was added or changed after the check, \
+             and the next one covers it"
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_did_not_answer_leaves_every_row_saying_so() {
+        let reason = "the daemon is not reachable: /tmp/whirl.sock (absent): No such file or \
+                      directory (os error 2)";
+        let (_directory, _path) = scratch("absent", TWO);
+        let settings = Settings::from_answers_with(&Answers::unreachable(reason), &no_key());
+        for row in &settings.sources.rows {
+            let state = row
+                .state_line(&settings.sources.checks)
+                .expect("a row says what is known");
+            // The row's own wrapper, and the client's own reason inside it.
+            assert!(
+                state.phrase.starts_with("whirl has not checked this ")
+                    && state.phrase.ends_with(reason),
+                "{:?}",
+                state.phrase
+            );
+            assert_eq!(state.tone, Tone::Unknown);
+        }
+    }
+
+    #[test]
+    fn a_slow_daemon_leaves_the_row_saying_the_check_ran_out_of_time() {
+        // The client's own reason for a socket read that ran out of time: the
+        // timeout is the socket's, so the words are the platform's io error
+        // (`crates/whirlui-client/src/error.rs`: a timeout is `ClientError::Io`
+        // and prints as the io error does). Left as the io error, that sentence
+        // is not one a person can act on, which is why the window says it in its
+        // own words.
+        let (_directory, path) = scratch("timeout", TWO);
+        let answers = Answers {
+            connection: Ok(()),
+            config_path: Ok(vec![format!("config: {}", path.display())]),
+            config_check: Err("Resource temporarily unavailable (os error 35)".to_string()),
+            version: Ok(Vec::new()),
+        };
+        let settings = Settings::from_answers_with(&answers, &no_key());
+        let state = settings.sources.rows[0]
+            .state_line(&settings.sources.checks)
+            .expect("a row says what is known");
+        assert_eq!(
+            state.phrase,
+            "whirl has not checked this folder yet: the daemon did not answer in time, and a \
+             check can take minutes; open this window again in a moment"
+        );
+        assert_eq!(state.tone, Tone::Unknown);
+    }
+
+    #[test]
+    fn the_window_shows_the_answer_under_the_row_it_is_about() {
+        // The panel's own arrangement, at the level the text dump can see: the
+        // answer sits under its row and is indented to it, so a person reading
+        // the window or the dump has the two together.
+        let (_directory, path) = scratch("under", TWO);
+        let answers = Answers::live(
+            vec![format!("config: {}", path.display())],
+            vec![
+                record("pictures", "local", 7, None),
+                record("space", "wallhaven", 3, None),
+            ],
+            Vec::new(),
+        );
+        let text = Settings::from_answers_with(&answers, &no_key()).to_text();
+        let lines: Vec<&str> = text.lines().collect();
+        let row = lines
+            .iter()
+            .position(|line| line.contains("A folder on this Mac: /tmp/walls"))
+            .expect("the folder's row");
+        let under = lines[row + 1];
+        assert!(
+            under
+                .trim_start()
+                .starts_with("whirl can read this folder, and it holds 7"),
+            "{under:?}"
+        );
+        assert!(under.starts_with("      "), "under its row: {under:?}");
+    }
+
+    #[test]
+    fn a_file_with_no_collection_never_reaches_the_store() {
+        // The store costs a process, so it is asked only when a Wallhaven row is
+        // on screen. The double here fails the test if it is asked at all, which
+        // is also what keeps the machine's own keychain out of every test in this
+        // module that has no collection in it.
+        let store = Recording::default();
+        let (_directory, path) = scratch("folder-only", ONE_FOLDER);
+        let settings = Settings::from_answers_with(&settings_answers_for(&path), &store);
+        assert!(
+            !store.asked.get(),
+            "the store is asked only for a Wallhaven row"
+        );
+        assert_eq!(settings.sources.rows.len(), 1);
     }
 }
