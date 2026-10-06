@@ -894,6 +894,39 @@ impl Answers {
     }
 }
 
+/// The store a window asks when no caller names one.
+///
+/// The app's own build asks the platform's keychain. A test build asks a store
+/// that holds no item, and the choice is made here rather than at each call site
+/// so that a test cannot reach the machine's own keychain by accident: every
+/// window a test opens asks nothing and starts no process, and a new call site
+/// inherits the choice instead of having to remember it.
+#[cfg(not(test))]
+fn default_store() -> &'static dyn Store {
+    &Keychain
+}
+
+#[cfg(test)]
+fn default_store() -> &'static dyn Store {
+    &NO_KEY
+}
+
+/// The store a test build asks: no item, and no process.
+#[cfg(test)]
+static NO_KEY: NoKey = NoKey;
+
+/// [`NO_KEY`]'s type. A named type rather than a closure, because [`Store`] is a
+/// trait and the static has to be an implementation of it.
+#[cfg(test)]
+struct NoKey;
+
+#[cfg(test)]
+impl Store for NoKey {
+    fn holds_key(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
 impl Settings {
     /// The window when the daemon cannot be asked anything.
     ///
@@ -918,15 +951,15 @@ impl Settings {
     /// are empty and the reason is on screen rather than being papered over with
     /// a default.
     pub fn from_answers(answers: &Answers) -> Settings {
-        Settings::from_answers_with(answers, &Keychain)
+        Settings::from_answers_with(answers, default_store())
     }
 
     /// The same window, built from the store the caller hands in.
     ///
-    /// The pair exists so that every key state a row can show is reachable from
-    /// a test without the machine's own keychain: [`Settings::from_answers`]
-    /// asks the platform's store ([`Keychain`]) and this asks whatever it is
-    /// handed.
+    /// [`Settings::from_answers`] asks the store this build is for
+    /// ([`default_store`]) and this asks whatever it is handed, so a test can
+    /// reach a key state the machine's own keychain cannot be asked about
+    /// without reaching that keychain.
     pub fn from_answers_with(answers: &Answers, store: &dyn Store) -> Settings {
         let target = target_of(answers);
         let read = target
@@ -1573,8 +1606,8 @@ impl Settings {
 
 /// The store the window asks whether the Wallhaven key is saved.
 ///
-/// A seam, not a wrapper: [`Settings::from_answers`] asks the platform's own
-/// store through [`Keychain`], and [`Settings::from_answers_with`] asks whatever
+/// A seam, not a wrapper: [`Settings::from_answers`] asks the store this build
+/// is for ([`default_store`]) and [`Settings::from_answers_with`] asks whatever
 /// it is handed, so every key state a row can show is reachable from a test that
 /// never reads the machine's keychain. The question is whether an item is there,
 /// never what it holds.
@@ -1586,6 +1619,7 @@ pub trait Store {
 
 /// The store this app ships: the platform's own keychain, through the one call
 /// that asks for presence and never for bytes ([`crate::keychain::exists`]).
+#[cfg_attr(test, allow(dead_code))] // A test build's windows ask the test store above, not this one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Keychain;
 

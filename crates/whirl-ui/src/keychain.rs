@@ -26,11 +26,18 @@
 //!   item this app writes is the item `whirl config check` looks for. Nothing
 //!   here invents a second name for the same secret.
 //!
+//! Every call that runs the tool goes through one place, `Proc::run`, and every
+//! call consults [`STORE_ENV`] first: a run that names no store reaches nothing
+//! by any path, and a run that reaches `Proc::run` at all is one that asked a
+//! store. That is what keeps a test out of the machine's own keychain, and it is
+//! the one seam a check can instrument to prove no test started the tool.
+//!
 //! The platform is macOS-only today, and the other two CI legs still compile
 //! this module: the `not(macos)` half answers every call with
 //! [`KeychainError::Unsupported`] rather than failing to build, so a
 //! cross-platform build of the workspace stays honest about what it can do.
 
+use std::env;
 use std::fmt;
 
 /// The service (and, by macOS's default, the label) of the item the documented
@@ -49,6 +56,43 @@ pub const ACCOUNT: &str = "whirl";
 /// refused.
 pub const LABEL: &str = "keychain:whirl-wallhaven";
 
+/// The environment variable that names the store this run asks.
+///
+/// A run that must not reach a person's own keychain names `none` here, and then
+/// no question is asked of it at all: every one is refused with
+/// [`NO_STORE_REASON`] and no process is started. The app itself never sets it;
+/// a run that has to be kept out of the machine's keychain -- a test above all --
+/// is what needs it, and this is the one gate every call below consults.
+pub const STORE_ENV: &str = "WHIRL_UI_KEYCHAIN";
+
+/// The word that names the platform's own store, which an unset variable means.
+const SYSTEM_STORE: &str = "system";
+
+/// Why a question asked by a run that named no store is not an answer from one.
+pub const NO_STORE_REASON: &str = "this run asks no store, so the item was not looked up";
+
+/// Whether a run that named this word asks no store at all.
+///
+/// Unset, empty and `system` are the platform's own store; `none` is no store;
+/// and every other word counts as no store too, because a run that meant to name
+/// none and misspelled it must not reach the real one by accident. It is a
+/// function of the word rather than of the environment, so the rule can be held
+/// without a process-wide variable being set.
+fn asks_no_store(named: Option<&str>) -> bool {
+    match named {
+        None | Some("") => false,
+        Some(word) => word != SYSTEM_STORE,
+    }
+}
+
+/// The refusal a run that named no store gets, or `None` when it asks the
+/// platform's own.
+fn refused_store() -> Option<KeychainError> {
+    let named = env::var_os(STORE_ENV);
+    asks_no_store(named.as_deref().and_then(|word| word.to_str()))
+        .then(|| KeychainError::Failed(NO_STORE_REASON.to_string()))
+}
+
 /// The platform store could not be asked, or refused the write. The message is
 /// the app's own; it never contains the token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,9 +101,8 @@ pub enum KeychainError {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     // Constructed only by the non-macOS half.
     Unsupported(String),
-    /// The store answered, and the answer was a failure.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    // Constructed only by the macOS half.
+    /// The store answered, and the answer was a failure, or this run named no
+    /// store to ask at all.
     Failed(String),
 }
 
@@ -80,16 +123,38 @@ impl fmt::Display for KeychainError {
 
 impl std::error::Error for KeychainError {}
 
+/// One run of the platform tool, as this module reads it: the exit status, and
+/// the bytes it printed when they were asked for.
+///
+/// It is a value rather than a live child, so every shape a store can answer
+/// with -- present, absent, refused -- is read by one rule, and the one place
+/// that starts a process is the only place a process is started.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Built by the macOS run and by the tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    /// The exit status, or `None` when the child was killed by a signal.
+    pub code: Option<i32>,
+    /// What the child printed on standard output, empty when it was discarded.
+    pub stdout: Vec<u8>,
+}
+
 /// Store the token, once. The one call in this crate that carries the secret.
 pub fn store(token: &str) -> Result<(), KeychainError> {
-    imp::store(token)
+    match refused_store() {
+        Some(refusal) => Err(refusal),
+        None => imp::store(token),
+    }
 }
 
 /// Whether an item exists for [`SERVICE`]. A `bool`, never the value: this is
 /// the call the panes make, and the only question the app may ask after the
 /// write.
+#[cfg_attr(test, allow(dead_code))] // A test build's windows ask the test store, so nothing in one asks this.
 pub fn exists() -> Result<bool, KeychainError> {
-    imp::exists()
+    match refused_store() {
+        Some(refusal) => Err(refusal),
+        None => imp::exists(),
+    }
 }
 
 /// The item's attributes, for evidence a human reads. It runs the same query
@@ -97,7 +162,10 @@ pub fn exists() -> Result<bool, KeychainError> {
 /// data is dropped before it leaves this function, so even a future macOS that
 /// printed one there could not make this a read.
 pub fn metadata() -> Result<Vec<String>, KeychainError> {
-    imp::metadata()
+    match refused_store() {
+        Some(refusal) => Err(refusal),
+        None => imp::metadata(),
+    }
 }
 
 /// The command line `security -i` is fed on stdin to write the item.
@@ -164,7 +232,9 @@ mod imp {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    use super::{ACCOUNT, KeychainError, SERVICE, add_line, attribute_lines, find_arguments, hex};
+    use super::{
+        ACCOUNT, Answer, KeychainError, SERVICE, add_line, attribute_lines, find_arguments, hex,
+    };
 
     /// The platform tool, by absolute path: the same binary `security(1)`
     /// documents, so nothing here depends on the caller's `PATH`.
@@ -175,31 +245,74 @@ mod imp {
     /// failure.
     const ITEM_NOT_FOUND: i32 = 44;
 
+    /// The one place this module runs the platform tool.
+    ///
+    /// Every call that touches the store goes through `run`, so a run that must
+    /// not reach a person's own keychain has exactly one place to be stopped, and
+    /// a check proves no test started the tool by making this the only thing that
+    /// panics: a run that refuses first reaches here not at all, so nothing is
+    /// started.
+    pub(super) struct Proc;
+
+    impl Proc {
+        /// Run `/usr/bin/security` with `args`, feeding `input` on its standard
+        /// input and keeping what it printed only when `keep_output` asks.
+        ///
+        /// `Err(reason)` is a run that did not happen -- the tool could not be
+        /// started, its input could not be written, or it did not finish -- which
+        /// is not an answer from the store and is kept apart from one.
+        pub(super) fn run(
+            args: &[&str],
+            input: Option<&[u8]>,
+            keep_output: bool,
+        ) -> Result<Answer, String> {
+            let mut child = Command::new(SECURITY)
+                .args(args)
+                .stdin(if input.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(if keep_output {
+                    Stdio::piped()
+                } else {
+                    // The presence query's output goes to /dev/null: the app reads
+                    // the exit status and not one byte of the item, which is the
+                    // whole of "whether it is there, never what it is".
+                    Stdio::null()
+                })
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("cannot run {SECURITY}: {error}"))?;
+            // The token goes in here and nowhere else: not an argument, not an
+            // environment variable, not a temporary file.
+            if let Some(input) = input
+                && let Some(mut stdin) = child.stdin.take()
+            {
+                stdin
+                    .write_all(input)
+                    .map_err(|error| format!("cannot write to {SECURITY}: {error}"))?;
+            }
+            let answer = child
+                .wait_with_output()
+                .map_err(|error| format!("{SECURITY} did not finish: {error}"))?;
+            Ok(Answer {
+                code: answer.status.code(),
+                stdout: answer.stdout,
+            })
+        }
+    }
+
     pub fn store(token: &str) -> Result<(), KeychainError> {
         let line = add_line(&hex(token.as_bytes()));
-        let mut child = Command::new(SECURITY)
-            .arg("-i")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| KeychainError::Failed(format!("cannot run {SECURITY}: {error}")))?;
-        // The token goes in here and nowhere else: not an argument, not an
-        // environment variable, not a temporary file.
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(line.as_bytes()).map_err(|error| {
-                KeychainError::Failed(format!("cannot write to {SECURITY}: {error}"))
-            })?;
-        }
-        let status = child.wait().map_err(|error| {
-            KeychainError::Failed(format!("{SECURITY} did not finish: {error}"))
-        })?;
-        if !status.success() {
+        let answer =
+            Proc::run(&["-i"], Some(line.as_bytes()), false).map_err(KeychainError::Failed)?;
+        if answer.code != Some(0) {
             return Err(KeychainError::Failed(format!(
                 "{SECURITY} add-generic-password -U -a {ACCOUNT} -s {SERVICE} exited {}",
-                status
-                    .code()
-                    .map_or("on a signal".to_string(), |c| c.to_string())
+                answer
+                    .code
+                    .map_or("on a signal".to_string(), |code| code.to_string())
             )));
         }
         // `security -i` reads commands until EOF and its status describes the
@@ -216,17 +329,8 @@ mod imp {
     }
 
     pub fn exists() -> Result<bool, KeychainError> {
-        // The child's output goes to /dev/null. The app reads the exit status
-        // and not one byte of the item, which is the whole of "whether it is
-        // there, never what it is".
-        let status = Command::new(SECURITY)
-            .args(find_arguments())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| KeychainError::Failed(format!("cannot run {SECURITY}: {error}")))?;
-        match status.code() {
+        let answer = Proc::run(&find_arguments(), None, false).map_err(KeychainError::Failed)?;
+        match answer.code {
             Some(0) => Ok(true),
             Some(ITEM_NOT_FOUND) => Ok(false),
             Some(code) => Err(KeychainError::Failed(format!(
@@ -239,13 +343,9 @@ mod imp {
     }
 
     pub fn metadata() -> Result<Vec<String>, KeychainError> {
-        let output = Command::new(SECURITY)
-            .args(find_arguments())
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| KeychainError::Failed(format!("cannot run {SECURITY}: {error}")))?;
-        match output.status.code() {
-            Some(0) => Ok(attribute_lines(&String::from_utf8_lossy(&output.stdout))),
+        let answer = Proc::run(&find_arguments(), None, true).map_err(KeychainError::Failed)?;
+        match answer.code {
+            Some(0) => Ok(attribute_lines(&String::from_utf8_lossy(&answer.stdout))),
             Some(ITEM_NOT_FOUND) => Ok(Vec::new()),
             Some(code) => Err(KeychainError::Failed(format!(
                 "{SECURITY} find-generic-password -s {SERVICE} exited {code}"
@@ -347,5 +447,18 @@ mod tests {
         assert_eq!(LABEL, "keychain:whirl-wallhaven");
         assert!(LABEL.contains(':'));
         assert!(LABEL.len() < 32);
+    }
+
+    #[test]
+    fn a_run_that_names_no_store_is_the_one_that_reaches_nothing() {
+        // Unset, empty and `system` are the platform's own store.
+        assert!(!asks_no_store(None));
+        assert!(!asks_no_store(Some("")));
+        assert!(!asks_no_store(Some("system")));
+        // `none` is no store, and a word that meant to be `none` and missed is
+        // no store too, so a misspelling cannot reach the real one by accident.
+        assert!(asks_no_store(Some("none")));
+        assert!(asks_no_store(Some("None")));
+        assert!(asks_no_store(Some("systen")));
     }
 }
