@@ -50,9 +50,10 @@ M2 turns the settings window from a report into a writer. The write surface is t
 the writer's contract in whirl's
 [`docs/decisions/0002-frontends-write-config-own-no-daemon.md`](https://github.com/guruor/whirl/blob/main/docs/decisions/0002-frontends-write-config-own-no-daemon.md):
 the frontend writes the file the daemon reads, and owns no part of the daemon. It still never calls a
-platform setter, never touches a state file, and starts no daemon: its one part in the daemon's
-lifecycle is the daemon's own command, `whirl daemon start|stop|status`, which asks the OS supervisor
-for the job the supervisor owns (whirl's `docs/architecture.md` section 8, "may rely on" 8).
+platform setter, never touches a state file, and starts no daemon: every part it has in the daemon's
+lifecycle is the daemon's own command, `whirl daemon install|uninstall|start|stop|status`, which asks
+the OS supervisor for the job the supervisor owns (whirl's `docs/architecture.md` section 8, "may
+rely on" 8).
 
 | # | criterion | proof |
 |---|---|---|
@@ -65,8 +66,9 @@ for the job the supervisor owns (whirl's `docs/architecture.md` section 8, "may 
 Two independent login items, owned by two different things: the app owns its own login item through
 macOS, and the daemon's supervisor unit is whirl's, written only by whirl's own command,
 `whirl daemon install`, and never by this app. This app reaches the daemon's lifecycle only by running
-that command: `whirl daemon start`, `whirl daemon stop` and `whirl daemon status`, three of the five
-verbs `whirl daemon` has, and never by writing the unit or calling `launchctl` itself (whirl's
+that command: `whirl daemon install`, `whirl daemon uninstall`, `whirl daemon start`, `whirl daemon
+stop` and `whirl daemon status`, all five verbs `whirl daemon` has, and never by writing the unit or
+calling `launchctl` itself (whirl's
 `docs/architecture.md` section 8, "may rely on" 8, and the accepted ADR
 [`docs/decisions/0002-frontends-write-config-own-no-daemon.md`](https://github.com/guruor/whirl/blob/main/docs/decisions/0002-frontends-write-config-own-no-daemon.md),
 decision 3).
@@ -74,7 +76,7 @@ decision 3).
 | # | criterion | proof |
 |---|---|---|
 | 1 | The app installs and removes its own login item. | The app's own mode does both: `whirl-ui --login-item register` then `whirl-ui --login-item status` prints `login item: enabled (status 1)`, and `sfltool dumpbtm` lists one row for the app (`Name: Whirl`, `Identifier: 2.com.guruor.whirl-ui`, `URL: file:///Applications/Whirl.app/`); `whirl-ui --login-item unregister` prints `login item: not registered (status 0)` and the Login Items pane no longer lists Whirl (the operator's own visual check). The bundle is what macOS registers and the status is read from the app's own `SMAppService.mainApp.status`, so the mode refuses from a bare binary and names the path it looked at rather than registering the directory it sits in. `sfltool dumpbtm` runs without root (exit 0, measured 2026-10-04). Two limits belong in the criterion rather than behind it, because a proof nobody can produce is worse than none: `unregister` leaves the app's row in the BTM database as `Disposition: [disabled, allowed, notified]` (the API has no delete, and the row survives the bundle being moved away), and no part of this is a launchd service, so `launchctl print gui/$(id -u)/<label>` exits 113 for every label (measured on macOS 26.7) and proves nothing either way. Artifact: the two status lines, the two `dumpbtm` rows, and the Login Items pane. |
-| 2 | The app does not own the daemon's lifetime. | `grep -rn 'LaunchAgents' crates/whirl-ui/src` names no write to `~/Library/LaunchAgents`, and that grep keeps the meaning it always had: the app writes no unit and spawns no process, and the one way it changes the unit is whirl's own command rather than a file. That reach is the whole of `crates/whirl-ui/src/daemon_cli.rs`: `grep -rn 'Command::new' crates/whirl-ui/src` names `whirl` for a daemon command (its other spawns are `curl` for the About pane's release check and `/usr/bin/security` for the platform store, and neither is the daemon), and the file's `Verb` enum is `Start`, `Stop` and `Status`. Those three are three of the five verbs `whirl daemon` has -- `install`, `uninstall`, `start`, `stop` and `status`, from whirl's `crates/whirl-cli/src/daemon.rs` -- so the app reaches the daemon's lifecycle through whirl's own command and nothing wider, and starts no process of the daemon's kind: the supervisor starts one when the app asks the supervisor's own command to (section 8, "may rely on" 8). A quit with "Also stop whirl" unchecked changes nothing: `pgrep -x whirld` names the same process before and after it. Artifact: the two greps, the log the stand-in `whirl` records, and the `pgrep` output. |
+| 2 | The app does not own the daemon's lifetime. | `grep -rn 'LaunchAgents' crates/whirl-ui/src` names no write to `~/Library/LaunchAgents`, and that grep keeps the meaning it always had: the app writes no unit and spawns no process, and the one way it changes the unit is whirl's own command rather than a file. That reach is the whole of `crates/whirl-ui/src/daemon_cli.rs`: `grep -rn 'Command::new' crates/whirl-ui/src` names `whirl` for a daemon command (its other spawns are `curl` for the About pane's release check, `/usr/bin/security` for the platform store and `open` for the Login Items pane in System Settings, and none of them is the daemon), and the file's `Verb` enum is `Install`, `Uninstall`, `Start`, `Stop` and `Status`, the five verbs `whirl daemon` has -- `install`, `uninstall`, `start`, `stop` and `status`, from whirl's `crates/whirl-cli/src/daemon.rs` -- so the app reaches the daemon's lifecycle through whirl's own command and nothing wider, and starts no process of the daemon's kind: the supervisor starts one when the app asks the supervisor's own command to (section 8, "may rely on" 8). A quit with "Also stop whirl" unchecked changes nothing: `pgrep -x whirld` names the same process before and after it. Artifact: the two greps, the log the stand-in `whirl` records, and the `pgrep` output. |
 | 3 | The daemon's unit is whirl's, not the app's. | The unit is written only by `whirl daemon install` and lives at `~/Library/LaunchAgents/com.guruor.whirl.plist` (whirl's `docs/architecture.md` 5.2), so `ls ~/Library/LaunchAgents` names it once that step has been run and not before. `launchctl print gui/$(id -u)/com.guruor.whirl` exits 0 when the job is loaded and 113 (`Could not find service`) when it is not, whether or not the app is installed (measured on macOS 26.7); `whirl daemon status` is the finer answer, exit 0 running, 1 loaded and stopped, 2 no such job. Nothing in this repository writes it: `grep -rn 'LaunchAgents' crates/` names no write. Artifact: the two commands' output and the unit file's path. |
 
 ## M4: Windows and Linux
