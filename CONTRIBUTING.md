@@ -67,6 +67,21 @@ variants are constructed only through a function that reads macOS's `SMAppServic
 a use inside `#[cfg(test)]` does not count in a non-test build. Without the allowance the Linux and
 Windows clippy legs fail on dead code; on macOS neither attribute fires.
 
+A fourth job, `coverage`, measures instead of checking. On `macos-latest` it runs the suite under
+`cargo-llvm-cov` on the pinned toolchain, prints the per-file table, uploads the report as a build
+artifact, and fails under two floors. The second floor is the one to know about: `app.rs`, `tray.rs`,
+`window.rs` and `theme.rs` are the app's own drawing, a headless test cannot reach them, and a single
+total would let the decisions behind that drawing rot while the drawing's lines held the number up, so
+that report leaves the drawing out. To run the two locally:
+
+    cargo install cargo-llvm-cov                    # once, with the pin: the llvm-tools-preview component too
+    cargo llvm-cov --workspace --summary-only
+    TOTAL_FLOOR=70 DECISION_FLOOR=84 DRAWING='whirl-ui/src/(app|tray|window|theme)\.rs$' scripts/check-coverage.sh
+
+The numbers in the last line are the `coverage` job's `env:`, which is where the comment saying what
+each was measured from lives. The commands run no test of their own after the first: the two reports
+read the data the suite left behind.
+
 The one thing the suite cannot assert is the menu bar launch itself, because it needs a window server.
 A maintainer checks it on a Mac:
 
