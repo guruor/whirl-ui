@@ -1,8 +1,7 @@
 name: ci
 
 # fmt, clippy, test, and the install scripts. Clippy and test run on the three operating
-# systems the
-# daemon targets. The tray is macOS-first: macOS-only code is gated behind
+# systems the daemon targets. The tray is macOS-first: macOS-only code is gated behind
 # `#[cfg(target_os = "macos")]`, so the Linux and Windows legs compile the same
 # workspace and stay green.
 #
@@ -85,3 +84,87 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace
         run: cargo test --workspace
+
+  # The suite has run for a while now and nothing has ever said how much of the crate it
+  # reaches, so nothing stopped that from sliding. This job is the measurement, and the
+  # two floors under it.
+  #
+  # One leg, on macOS, and neither of the other two. `crates/whirl-ui/src/tray.rs` is
+  # behind `#[cfg(target_os = "macos")]`, and the four files the second floor leaves out
+  # are the app's own drawing, so a leg that compiles a different, smaller crate measures
+  # a different number. The other two operating systems already build and test the
+  # workspace on the `test` leg above, so measuring there as well would be the same
+  # information three times over, on two legs that cost more to run.
+  #
+  # What this job costs is an install and one more build of the workspace, and it is the
+  # one thing here that is not small. `cargo-llvm-cov` is not part of the toolchain, so it
+  # is compiled here: 2m15s on the machine this was written on, and nothing after the
+  # first run, because the cache below keeps `~/.cargo/bin` and the step then finds the
+  # binary already installed. The instrumented build is its own, under
+  # `target/llvm-cov-target`, which no other leg's cache covers, so it is a full build of
+  # the workspace: 4m47s from an empty target directory on that machine, the suite and the
+  # three reports included. That machine has eight cores and a runner has three, which
+  # nothing measured here can account for.
+  coverage:
+    name: coverage (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned toolchain, its components, and the llvm tools
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the cargo-llvm-cov the floors were measured with
+        run: cargo install --locked --version 0.9.1 cargo-llvm-cov
+
+      # The per-file table, which is the log line this job exists to print. The suite runs
+      # once here, under the instrumentation, and every step below reads what it left
+      # behind rather than running it again.
+      - name: cargo llvm-cov --workspace --summary-only
+        run: cargo llvm-cov --workspace --summary-only
+
+      # The two floors, checked by `scripts/check-coverage.sh` so that a miss says which
+      # floor missed and by how much. The numbers are here, each beside what it was
+      # measured from.
+      #
+      # Both are measured on this branch with the command above, and both depend on one thing
+      # outside the crate: the tests that reach a daemon skip when nothing answers the socket
+      # (`crates/whirl-ui/tests/settings.rs`), so a machine whose daemon is up measures more
+      # covered lines in `dump.rs` than one without. A runner has no daemon, and that is the
+      # pair measured here: the whole workspace at 73.77% of 8039 lines, 2109 of them
+      # uncovered, and this report with the drawing left out at 86.22% of 5828, 803 uncovered.
+      # Each floor sits under the no-daemon pair by more than that swing rather than on it.
+      #
+      # The first floor is the total, the number a reader asks for.
+      #
+      # The second is the floor a total cannot express. Four of the `whirl-ui` modules are the
+      # drawing itself: `app.rs` is the panes, `tray.rs` the status item and its menu,
+      # `window.rs` the window and the AppKit calls a raise makes, `theme.rs` the egui style.
+      # A test cannot reach them without a display, so they carry the least coverage in the
+      # crate (24% to 58%) and, being 2211 of those 8039 lines, they dilute everything else.
+      # A single total would let a decision module lose its tests while the drawing's own
+      # lines moved enough to hold the number up, so the drawing is left out of this report
+      # and the floor sits on what remains: the logic that runs headless, 5828 lines.
+      #
+      # `DRAWING` names the files to leave out rather than the files to keep, and that is the
+      # point of it: a new module is measured by default, so a new drawing module nobody names
+      # here pulls the second number down and fails the job rather than being quietly excluded
+      # from it.
+      - name: The two floors
+        env:
+          # 73.77% with no daemon answering, so the floor is 3.77 points under the measurement
+          # and 302 lines of it.
+          TOTAL_FLOOR: "70"
+          # 86.22% the same way: 2.22 points and 129 lines under it.
+          DECISION_FLOOR: "84"
+          DRAWING: 'whirl-ui/src/(app|tray|window|theme)\.rs$'
+        run: sh scripts/check-coverage.sh
+
+      - name: The report, for a reader
+        run: cargo llvm-cov report --html
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html/
+          if-no-files-found: error
