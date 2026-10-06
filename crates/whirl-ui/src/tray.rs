@@ -1495,4 +1495,118 @@ mod tests {
         drop(thread);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn only_an_install_that_was_attempted_leaves_a_line_in_the_menu() {
+        // A daemon the supervisor already runs was not touched, and a daemon
+        // that is merely absent is what the menu's own first line already says,
+        // so neither has anything to report. An install that was attempted keeps
+        // the command's own words, which is the case a person has to be told
+        // about.
+        let present = daemon_cli::Launched::Present("whirl 0.1.0 is running".to_string());
+        let absent = daemon_cli::Launched::Absent("no daemon is running".to_string());
+        assert_eq!(launch_report(present), None);
+        assert_eq!(launch_report(absent), None);
+
+        let refused = daemon_cli::Launched::Installed(daemon_cli::Outcome::Refused(
+            "whirl: the unit is not installed".to_string(),
+        ));
+        assert_eq!(
+            launch_report(refused).as_deref(),
+            Some("whirl: the unit is not installed")
+        );
+
+        // And the line is a line: the report row is inserted under the image
+        // line and is not a control, so an install that refused reads as
+        // something to read rather than something to press.
+        let rows = menu::rows_reporting(&View::offline(), Some("whirl: the unit is not installed"));
+        let report = rows
+            .iter()
+            .find(|row| row.id == Some(RowId::Report))
+            .expect("a report is a row");
+        assert!(!report.enabled, "a report is a line: {}", report.line());
+        assert_eq!(
+            rows.first().map(|row| row.id),
+            Some(Some(RowId::Now)),
+            "the state the app is in stays the first line"
+        );
+    }
+
+    #[test]
+    fn the_mark_and_the_rows_of_one_state_never_disagree() {
+        // The mark and the menu are two readings of one view, and they may not
+        // disagree: a daemon that did not answer is drawn as the unreachable
+        // mark, is offered the start row, and has every row that needs a daemon
+        // disabled. A state the daemon did not answer is never drawn as a state
+        // it is in.
+        for (view, mark) in [
+            (View::live(snapshot(false)), icon::Mark::Running),
+            (View::live(snapshot(true)), icon::Mark::Paused),
+            (View::offline(), icon::Mark::Unreachable),
+        ] {
+            let asked = menu::rows_reporting(&view, None);
+            assert_eq!(icon::Mark::of(&view), mark, "{view:?}");
+            let offered = asked.iter().any(|row| row.id == Some(RowId::StartDaemon));
+            assert_eq!(
+                offered,
+                mark == icon::Mark::Unreachable,
+                "the offer and the unreachable mark are the same fact: {view:?}"
+            );
+            for id in [
+                RowId::Next,
+                RowId::Previous,
+                RowId::Pause,
+                RowId::Resume,
+                RowId::Favourite,
+            ] {
+                let Some(row) = asked.iter().find(|row| row.id == Some(id)) else {
+                    continue;
+                };
+                assert_eq!(
+                    row.enabled,
+                    mark != icon::Mark::Unreachable,
+                    "{}",
+                    row.line()
+                );
+            }
+            // Neither of the two rows that are not daemon verbs depends on the
+            // daemon: an app with no way to quit is a bug, not a state.
+            for id in [RowId::Settings, RowId::Quit] {
+                let row = asked
+                    .iter()
+                    .find(|row| row.id == Some(id))
+                    .expect("every state offers a way out");
+                assert!(row.enabled, "{}", row.line());
+            }
+        }
+
+        // The direction that matters on its own, with no daemon answering at
+        // all: nothing that needs a daemon is enabled, and the mark is neither
+        // of the two states a daemon answers with.
+        let offline = View::offline();
+        let asked = menu::rows_reporting(&offline, None);
+        assert_ne!(icon::Mark::of(&offline), icon::Mark::Running);
+        assert_ne!(icon::Mark::of(&offline), icon::Mark::Paused);
+        for id in [
+            RowId::Next,
+            RowId::Previous,
+            RowId::Pause,
+            RowId::Resume,
+            RowId::Favourite,
+        ] {
+            if let Some(row) = asked.iter().find(|row| row.id == Some(id)) {
+                assert!(!row.enabled, "{}", row.line());
+            }
+        }
+    }
+
+    #[test]
+    fn the_checkbox_is_the_only_thing_the_quit_plan_hears() {
+        // The plan is built from the answer and the answer is the checkbox:
+        // nothing here re-reads the view or asks the daemon what the person
+        // meant.
+        assert_eq!(answer_of(true), daemon_cli::QuitAnswer::StopWhirl);
+        assert_eq!(answer_of(false), daemon_cli::QuitAnswer::KeepRunning);
+        assert_ne!(answer_of(true), answer_of(false));
+    }
 }

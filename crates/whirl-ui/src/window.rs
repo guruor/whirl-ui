@@ -412,6 +412,9 @@ mod tests {
     #[derive(Debug, Default)]
     struct Recorded {
         minimised: bool,
+        /// Whether `unminimise` refuses: the step is asked for and does not
+        /// take, which is the case the report has to keep out.
+        refuses_unminimise: bool,
         calls: RefCell<Vec<Step>>,
     }
 
@@ -440,7 +443,8 @@ mod tests {
         }
 
         fn unminimise(&self) -> bool {
-            self.record(Step::Unminimise)
+            self.record(Step::Unminimise);
+            !self.refuses_unminimise
         }
 
         fn activate_app(&self) -> bool {
@@ -531,6 +535,63 @@ mod tests {
         assert!(
             !may_terminate,
             "and AppKit did not carry it out: the flow's close ends the process"
+        );
+    }
+
+    /// A window that refuses every operation: what a raise finds when the window
+    /// it looked up has gone in between.
+    #[derive(Debug, Default)]
+    struct Gone;
+
+    impl Window for Gone {
+        fn minimised(&self) -> bool {
+            false
+        }
+
+        fn order_front(&self) -> bool {
+            false
+        }
+
+        fn make_key_and_main(&self) -> bool {
+            false
+        }
+
+        fn unminimise(&self) -> bool {
+            false
+        }
+
+        fn activate_app(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_step_that_did_not_take_is_left_out_of_the_report() {
+        // The report is a report, not a plan: every call answers whether it took,
+        // and the answer is what the line says. A window that has gone reports
+        // nothing, which is the AppKit case of a lookup that found no window,
+        // and it does not claim to have brought anything forward.
+        assert_eq!(settings_asked(true, &Gone), Some(Vec::new()));
+
+        // A step that was asked for and refused is left out while the others go
+        // through. The call is recorded, so this says why the step is missing:
+        // it was asked for and did not take, rather than never having been tried
+        // at all. That is the difference between "the window was brought
+        // forward" and "the app tried to bring it forward".
+        let stuck = Recorded {
+            minimised: true,
+            refuses_unminimise: true,
+            ..Recorded::default()
+        };
+        assert_eq!(
+            raise(&stuck),
+            vec![Step::Front, Step::KeyAndMain, Step::Activate],
+            "the unminimise was asked for and refused"
+        );
+        assert!(
+            stuck.calls().contains(&Step::Unminimise),
+            "it was asked for: {:?}",
+            stuck.calls()
         );
     }
 }

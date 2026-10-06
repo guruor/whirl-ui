@@ -1573,4 +1573,192 @@ mod tests {
         assert!(text.contains(CHECK_LABEL), "{text}");
         assert_eq!(Pane::default(), Pane::Sources);
     }
+
+    /// A directory of this test's own, removed by the test that made it.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("whirl-ui-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    #[test]
+    fn a_frame_is_written_as_a_png_of_the_frames_own_size() {
+        // `--screenshot` is the one deliverable the app can produce without a
+        // display: it writes its own pixels rather than photographing whatever
+        // else the screen was showing. This is the whole of the writer: the
+        // size, the eight-bit RGBA the encoder is told, and the bytes of each
+        // pixel in order.
+        let dir = scratch("png");
+        let path = dir.join("frame.png");
+        let mut image = egui::ColorImage::filled([3, 2], egui::Color32::from_rgb(9, 8, 7));
+        image.pixels[5] = egui::Color32::from_rgb(200, 100, 50);
+        write_png(&path, &image).expect("the frame is written");
+
+        let bytes = std::fs::read(&path).expect("the file");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
+        let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+        let mut reader = decoder.read_info().expect("a PNG this build can read");
+        assert_eq!((reader.info().width, reader.info().height), (3, 2));
+        assert_eq!(reader.info().color_type, png::ColorType::Rgba);
+        assert_eq!(reader.info().bit_depth, png::BitDepth::Eight);
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let frame = reader.next_frame(&mut buffer).expect("one frame");
+        assert_eq!((frame.width, frame.height), (3, 2), "the frame's own size");
+        assert_eq!(&buffer[..4], &[9, 8, 7, 255], "the first pixel, as drawn");
+        assert_eq!(
+            &buffer[20..24],
+            &[200, 100, 50, 255],
+            "the pixel the frame was given"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_capture_asks_once_and_writes_the_reply_it_is_given() {
+        // The capture's decisions, all reachable without a display. An app that
+        // was not asked for a capture asks the context for nothing; the pass that
+        // was asked for one asks for the frame and writes nothing yet; a pass
+        // whose input carries anything but the reply asks again rather than
+        // writing an empty file or closing on nothing; and the pass that carries
+        // the screenshot writes it once and closes the window, which is the close
+        // `window_close` says belongs to the capture rather than to the window.
+        let dir = scratch("capture");
+        let path = dir.join("window.png");
+        let ctx = egui::Context::default();
+
+        // One pass, with this input. `begin_pass`/`end_pass` are the public way
+        // to run a frame against a context with no window behind it, and the
+        // frame's own output is dropped, so its texture deltas are marked
+        // handled first: egui panics on a delta nobody looked at.
+        let pass = |app: &mut App, input: egui::RawInput| {
+            ctx.begin_pass(input);
+            app.capture_window(&ctx);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+            output
+        };
+        // What the pass asked the window to do, which is the decision a test can
+        // read without a display.
+        fn asked(output: &egui::FullOutput) -> Vec<egui::ViewportCommand> {
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map(|viewport| viewport.commands.clone())
+                .unwrap_or_default()
+        }
+        fn asks_for_the_frame(commands: &[egui::ViewportCommand]) -> bool {
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Screenshot(_)))
+        }
+        fn closes(commands: &[egui::ViewportCommand]) -> bool {
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        }
+        fn wants_another_pass(output: &egui::FullOutput) -> bool {
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .is_some_and(|viewport| viewport.repaint_delay.is_zero())
+        }
+
+        let mut unasked = App::closed();
+        let output = pass(&mut unasked, egui::RawInput::default());
+        assert!(
+            !asks_for_the_frame(&asked(&output)),
+            "an app that was not asked for a capture asks for no frame"
+        );
+
+        let mut app = App::closed().capturing(path.clone());
+        let output = pass(&mut app, egui::RawInput::default());
+        assert!(
+            asks_for_the_frame(&asked(&output)),
+            "the first pass asks for the frame"
+        );
+        assert!(!path.exists(), "the reply lands a frame or two later");
+
+        let output = pass(
+            &mut app,
+            egui::RawInput {
+                events: vec![egui::Event::PointerGone],
+                ..egui::RawInput::default()
+            },
+        );
+        assert!(
+            !asks_for_the_frame(&asked(&output)),
+            "it asked once: a second pass waits for the reply"
+        );
+        assert!(
+            wants_another_pass(&output),
+            "and it keeps the loop alive until the reply lands"
+        );
+        assert!(
+            !path.exists(),
+            "an event that is not the reply is not the frame"
+        );
+
+        let image = egui::ColorImage::filled([2, 3], egui::Color32::from_rgb(4, 5, 6));
+        let reply = egui::RawInput {
+            events: vec![egui::Event::Screenshot {
+                viewport_id: egui::ViewportId::ROOT,
+                user_data: egui::UserData::default(),
+                image: std::sync::Arc::new(image),
+            }],
+            ..egui::RawInput::default()
+        };
+        let output = pass(&mut app, reply);
+        assert!(path.exists(), "the reply is the file");
+        assert!(
+            closes(&asked(&output)),
+            "the pass that wrote the frame closes the window"
+        );
+        assert!(
+            !app.window_close(true),
+            "the close that follows the write is the capture's own"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_capture_that_cannot_be_written_leaves_no_file_and_does_not_hang() {
+        // A path whose folder is not there is the one capture failure a test can
+        // reach without a display. It is an answer, not a stall: nothing is
+        // written and the window still closes rather than sitting on a file it
+        // cannot produce.
+        let dir = scratch("unwritable");
+        let path = dir.join("no-such-folder").join("frame.png");
+        let ctx = egui::Context::default();
+        let mut app = App::closed().capturing(path.clone());
+
+        let pass = |app: &mut App, input: egui::RawInput| {
+            ctx.begin_pass(input);
+            app.capture_window(&ctx);
+            let mut output = ctx.end_pass();
+            output.textures_delta.clear();
+        };
+
+        pass(&mut app, egui::RawInput::default());
+        let image = egui::ColorImage::filled([1, 1], egui::Color32::from_rgb(1, 2, 3));
+        pass(
+            &mut app,
+            egui::RawInput {
+                events: vec![egui::Event::Screenshot {
+                    viewport_id: egui::ViewportId::ROOT,
+                    user_data: egui::UserData::default(),
+                    image: std::sync::Arc::new(image),
+                }],
+                ..egui::RawInput::default()
+            },
+        );
+        assert!(
+            !path.exists(),
+            "a path that cannot be written holds nothing"
+        );
+        assert!(
+            !app.window_close(true),
+            "the window still closes: the failure is the capture's"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -93,6 +93,17 @@ fn refused_store() -> Option<KeychainError> {
         .then(|| KeychainError::Failed(NO_STORE_REASON.to_string()))
 }
 
+/// The platform tool, by absolute path: the same binary `security(1)`
+/// documents, so nothing here depends on the caller's `PATH`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS run and by the rules below.
+const SECURITY: &str = "/usr/bin/security";
+
+/// `errSecItemNotFound`, the status `security` exits with when the item is
+/// not there. It is the one non-zero status that is an answer rather than a
+/// failure.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by `presence` below.
+const ITEM_NOT_FOUND: i32 = 44;
+
 /// The platform store could not be asked, or refused the write. The message is
 /// the app's own; it never contains the token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,9 +137,9 @@ impl std::error::Error for KeychainError {}
 /// One run of the platform tool, as this module reads it: the exit status, and
 /// the bytes it printed when they were asked for.
 ///
-/// It is a value rather than a live child, so every shape a store can answer
-/// with -- present, absent, refused -- is read by one rule, and the one place
-/// that starts a process is the only place a process is started.
+/// It is a value rather than a live child, so that the four shapes a store can
+/// answer with -- present, absent, refused, unreadable -- can be put in front of
+/// the rules below without running `security` at all.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Built by the macOS run and by the tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
@@ -136,6 +147,26 @@ pub struct Answer {
     pub code: Option<i32>,
     /// What the child printed on standard output, empty when it was discarded.
     pub stdout: Vec<u8>,
+}
+
+/// The platform store, as this module asks it questions: one run of the tool.
+///
+/// A trait, so that [`store`], [`exists`] and [`metadata`] can be driven from a
+/// double and never from the user's own keychain: no test in this file runs
+/// `security`, so no test reads the item, writes it, or asks for access to it.
+///
+/// `keep_output` is the other half of that, and the reason it is a parameter
+/// rather than a rule inside the caller: the presence query discards everything
+/// the tool printed, so "is it there" cannot become "what is it" by accident.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Driven by the macOS calls and by the tests.
+pub trait Security {
+    /// Run the tool with `args`, feeding `input` on its standard input.
+    ///
+    /// `Err(reason)` is a run that did not happen -- the tool could not be
+    /// started, its input could not be written, or it did not finish -- which is
+    /// not an answer from the store and is kept apart from one.
+    fn run(&self, args: &[&str], input: Option<&[u8]>, keep_output: bool)
+    -> Result<Answer, String>;
 }
 
 /// Store the token, once. The one call in this crate that carries the secret.
@@ -165,6 +196,83 @@ pub fn metadata() -> Result<Vec<String>, KeychainError> {
     match refused_store() {
         Some(refusal) => Err(refusal),
         None => imp::metadata(),
+    }
+}
+
+/// Whether the store holds the item, from one query's answer.
+///
+/// The rule a `find-generic-password` answer means, in one place: exit `0` is
+/// "it is there", [`ITEM_NOT_FOUND`] is "it is not", any other code is a refusal
+/// that names the code, and a signal is a refusal with no code at all. An item
+/// that is not there is an answer, and the two refusals stay apart from it:
+/// "the store would not say" turning into "there is no item" is how a pane comes
+/// to tell a person that a key they saved has gone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS read and by the tests.
+pub fn presence(tool: &dyn Security) -> Result<bool, KeychainError> {
+    let answer = tool
+        .run(&find_arguments(), None, false)
+        .map_err(KeychainError::Failed)?;
+    match answer.code {
+        Some(0) => Ok(true),
+        Some(ITEM_NOT_FOUND) => Ok(false),
+        Some(code) => Err(KeychainError::Failed(format!(
+            "{SECURITY} find-generic-password -s {SERVICE} exited {code}"
+        ))),
+        None => Err(KeychainError::Failed(format!(
+            "{SECURITY} find-generic-password -s {SERVICE} was killed by a signal"
+        ))),
+    }
+}
+
+/// The item's attribute lines, from one query's answer.
+///
+/// The one call that keeps what the tool printed; [`attribute_lines`] is what
+/// keeps a password line out of the result even so.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS read and by the tests.
+pub fn attributes(tool: &dyn Security) -> Result<Vec<String>, KeychainError> {
+    let answer = tool
+        .run(&find_arguments(), None, true)
+        .map_err(KeychainError::Failed)?;
+    match answer.code {
+        Some(0) => Ok(attribute_lines(&String::from_utf8_lossy(&answer.stdout))),
+        Some(ITEM_NOT_FOUND) => Ok(Vec::new()),
+        Some(code) => Err(KeychainError::Failed(format!(
+            "{SECURITY} find-generic-password -s {SERVICE} exited {code}"
+        ))),
+        None => Err(KeychainError::Failed(format!(
+            "{SECURITY} find-generic-password -s {SERVICE} was killed by a signal"
+        ))),
+    }
+}
+
+/// Write the item, and confirm it is there afterwards.
+///
+/// The token goes in on the child's standard input and nowhere else: not as an
+/// argument, not in the environment, and not in a temporary file. `security -i`
+/// reads commands until end of input, and its status describes the session
+/// rather than the one line, so the item is confirmed by the query that asks
+/// about presence. A store that did not take the write is a failure here rather
+/// than a pane that says a key is saved when nothing landed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // Used by the macOS write and by the tests.
+pub fn write(tool: &dyn Security, token: &str) -> Result<(), KeychainError> {
+    let line = add_line(&hex(token.as_bytes()));
+    let answer = tool
+        .run(&["-i"], Some(line.as_bytes()), false)
+        .map_err(KeychainError::Failed)?;
+    if answer.code != Some(0) {
+        return Err(KeychainError::Failed(format!(
+            "{SECURITY} add-generic-password -U -a {ACCOUNT} -s {SERVICE} exited {}",
+            answer
+                .code
+                .map_or("on a signal".to_string(), |code| code.to_string())
+        )));
+    }
+    if presence(tool)? {
+        Ok(())
+    } else {
+        Err(KeychainError::Failed(format!(
+            "the store answered the write but holds no item for service {SERVICE}"
+        )))
     }
 }
 
@@ -232,36 +340,19 @@ mod imp {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    use super::{
-        ACCOUNT, Answer, KeychainError, SERVICE, add_line, attribute_lines, find_arguments, hex,
-    };
+    use super::{Answer, KeychainError, SECURITY, Security, attributes, presence, write};
 
-    /// The platform tool, by absolute path: the same binary `security(1)`
-    /// documents, so nothing here depends on the caller's `PATH`.
-    const SECURITY: &str = "/usr/bin/security";
-
-    /// `errSecItemNotFound`, the status `security` exits with when the item is
-    /// not there. It is the one non-zero status that is an answer rather than a
-    /// failure.
-    const ITEM_NOT_FOUND: i32 = 44;
-
-    /// The one place this module runs the platform tool.
+    /// The store this build ships: one run of `/usr/bin/security`.
     ///
-    /// Every call that touches the store goes through `run`, so a run that must
-    /// not reach a person's own keychain has exactly one place to be stopped, and
-    /// a check proves no test started the tool by making this the only thing that
-    /// panics: a run that refuses first reaches here not at all, so nothing is
-    /// started.
+    /// The whole of the tool's use is here, which is what makes the rest of the
+    /// module a set of rules about answers rather than a set of calls: a test
+    /// replaces this with a double and every rule below it is exercised without
+    /// a store being touched.
     pub(super) struct Proc;
 
-    impl Proc {
-        /// Run `/usr/bin/security` with `args`, feeding `input` on its standard
-        /// input and keeping what it printed only when `keep_output` asks.
-        ///
-        /// `Err(reason)` is a run that did not happen -- the tool could not be
-        /// started, its input could not be written, or it did not finish -- which
-        /// is not an answer from the store and is kept apart from one.
-        pub(super) fn run(
+    impl Security for Proc {
+        fn run(
+            &self,
             args: &[&str],
             input: Option<&[u8]>,
             keep_output: bool,
@@ -276,9 +367,9 @@ mod imp {
                 .stdout(if keep_output {
                     Stdio::piped()
                 } else {
-                    // The presence query's output goes to /dev/null: the app reads
-                    // the exit status and not one byte of the item, which is the
-                    // whole of "whether it is there, never what it is".
+                    // The presence query's output goes to /dev/null: the app
+                    // reads the exit status and not one byte of the item, which
+                    // is the whole of "whether it is there, never what it is".
                     Stdio::null()
                 })
                 .stderr(Stdio::null())
@@ -303,57 +394,16 @@ mod imp {
         }
     }
 
-    pub fn store(token: &str) -> Result<(), KeychainError> {
-        let line = add_line(&hex(token.as_bytes()));
-        let answer =
-            Proc::run(&["-i"], Some(line.as_bytes()), false).map_err(KeychainError::Failed)?;
-        if answer.code != Some(0) {
-            return Err(KeychainError::Failed(format!(
-                "{SECURITY} add-generic-password -U -a {ACCOUNT} -s {SERVICE} exited {}",
-                answer
-                    .code
-                    .map_or("on a signal".to_string(), |code| code.to_string())
-            )));
-        }
-        // `security -i` reads commands until EOF and its status describes the
-        // session, so the item's presence is confirmed by the one query that
-        // asks about presence: `exists`. A store that did not land is a failure
-        // here rather than a pane that says ready about nothing.
-        if exists()? {
-            Ok(())
-        } else {
-            Err(KeychainError::Failed(format!(
-                "the store answered the write but holds no item for service {SERVICE}"
-            )))
-        }
+    pub(super) fn store(token: &str) -> Result<(), KeychainError> {
+        write(&Proc, token)
     }
 
-    pub fn exists() -> Result<bool, KeychainError> {
-        let answer = Proc::run(&find_arguments(), None, false).map_err(KeychainError::Failed)?;
-        match answer.code {
-            Some(0) => Ok(true),
-            Some(ITEM_NOT_FOUND) => Ok(false),
-            Some(code) => Err(KeychainError::Failed(format!(
-                "{SECURITY} find-generic-password -s {SERVICE} exited {code}"
-            ))),
-            None => Err(KeychainError::Failed(format!(
-                "{SECURITY} find-generic-password -s {SERVICE} was killed by a signal"
-            ))),
-        }
+    pub(super) fn exists() -> Result<bool, KeychainError> {
+        presence(&Proc)
     }
 
-    pub fn metadata() -> Result<Vec<String>, KeychainError> {
-        let answer = Proc::run(&find_arguments(), None, true).map_err(KeychainError::Failed)?;
-        match answer.code {
-            Some(0) => Ok(attribute_lines(&String::from_utf8_lossy(&answer.stdout))),
-            Some(ITEM_NOT_FOUND) => Ok(Vec::new()),
-            Some(code) => Err(KeychainError::Failed(format!(
-                "{SECURITY} find-generic-password -s {SERVICE} exited {code}"
-            ))),
-            None => Err(KeychainError::Failed(format!(
-                "{SECURITY} find-generic-password -s {SERVICE} was killed by a signal"
-            ))),
-        }
+    pub(super) fn metadata() -> Result<Vec<String>, KeychainError> {
+        attributes(&Proc)
     }
 }
 
@@ -382,6 +432,9 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
     use super::*;
 
     #[test]
@@ -460,5 +513,289 @@ mod tests {
         assert!(asks_no_store(Some("none")));
         assert!(asks_no_store(Some("None")));
         assert!(asks_no_store(Some("systen")));
+    }
+
+    // The four shapes a store can answer with, and the rules that read them.
+    //
+    // Every test below drives the rules through a double and never through
+    // `security`: no test in this file reads the item, writes it, or asks for
+    // access to it, and none of them can prompt for an authorization dialog.
+    // The double also records the questions, which is how the two absences are
+    // asserted directly rather than inferred: a presence query keeps no output,
+    // and a token goes in on standard input and never in an argument.
+
+    /// One question a doubled store was asked.
+    #[derive(Debug, Clone)]
+    struct Asked {
+        /// The arguments the tool was run with.
+        args: Vec<String>,
+        /// What was fed on the tool's standard input, if anything.
+        input: Option<Vec<u8>>,
+        /// Whether the caller asked to keep the bytes the tool printed.
+        keep_output: bool,
+    }
+
+    /// A store that answers from a script, and remembers what it was asked.
+    struct Doubled {
+        answers: RefCell<VecDeque<Result<Answer, String>>>,
+        asked: RefCell<Vec<Asked>>,
+    }
+
+    impl Doubled {
+        /// A store that answers these, in order, and then has nothing left.
+        fn answering(answers: Vec<Result<Answer, String>>) -> Doubled {
+            Doubled {
+                answers: RefCell::new(answers.into()),
+                asked: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// The questions it was asked, in order.
+        fn asked(&self) -> Vec<Asked> {
+            self.asked.borrow().clone()
+        }
+    }
+
+    impl Security for Doubled {
+        fn run(
+            &self,
+            args: &[&str],
+            input: Option<&[u8]>,
+            keep_output: bool,
+        ) -> Result<Answer, String> {
+            self.asked.borrow_mut().push(Asked {
+                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                input: input.map(<[u8]>::to_vec),
+                keep_output,
+            });
+            self.answers
+                .borrow_mut()
+                .pop_front()
+                .expect("every run a test makes has an answer scripted for it")
+        }
+    }
+
+    /// A store that answered, with this exit status.
+    fn exited(code: i32, stdout: &str) -> Result<Answer, String> {
+        Ok(Answer {
+            code: Some(code),
+            stdout: stdout.as_bytes().to_vec(),
+        })
+    }
+
+    /// A store whose tool was killed before it could answer.
+    fn signalled() -> Result<Answer, String> {
+        Ok(Answer {
+            code: None,
+            stdout: Vec::new(),
+        })
+    }
+
+    /// A store that could not be asked at all.
+    fn could_not_run(reason: &str) -> Result<Answer, String> {
+        Err(reason.to_string())
+    }
+
+    /// The arguments the double should have been asked with.
+    fn query() -> Vec<String> {
+        find_arguments()
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_store_that_holds_the_item_answers_present_and_is_never_asked_for_the_bytes() {
+        // The dump carries a password line on purpose: the presence rule keeps
+        // no output at all, so what the tool printed cannot reach it, and the
+        // answer is still "it is there".
+        let store = Doubled::answering(vec![exited(
+            0,
+            "svce<blob>=\"whirl-wallhaven\"\npassword: \"fake\"\n",
+        )]);
+        assert_eq!(presence(&store), Ok(true));
+        let asked = store.asked();
+        assert_eq!(asked.len(), 1, "one question, one answer");
+        assert_eq!(asked[0].args, query());
+        assert_eq!(
+            asked[0].input, None,
+            "a presence query feeds the tool nothing"
+        );
+        assert!(
+            !asked[0].keep_output,
+            "and never keeps what the tool printed"
+        );
+    }
+
+    #[test]
+    fn a_store_with_no_item_answers_absent_rather_than_refusing() {
+        let store = Doubled::answering(vec![exited(ITEM_NOT_FOUND, "")]);
+        assert_eq!(
+            presence(&store),
+            Ok(false),
+            "exit {ITEM_NOT_FOUND} is an answer, not a failure"
+        );
+    }
+
+    #[test]
+    fn a_store_that_refuses_names_the_code_it_refused_with() {
+        let store = Doubled::answering(vec![exited(51, "")]);
+        let refused = presence(&store).expect_err("exit 51 is not an answer");
+        assert_eq!(
+            refused.message(),
+            format!("{SECURITY} find-generic-password -s {SERVICE} exited 51")
+        );
+    }
+
+    #[test]
+    fn the_sentence_is_the_same_one_when_it_is_printed_or_asked_for() {
+        // The window prints the error with `Display` and everything else asks it
+        // with `message`: a person must never read two different sentences for
+        // one failure. `Unsupported` is the arm this platform cannot reach (it is
+        // the not-macOS stub that raises it), so it is the one worth pinning.
+        let unsupported = KeychainError::Unsupported("the store is not wired here".to_string());
+        assert_eq!(unsupported.message(), "the store is not wired here");
+        assert_eq!(unsupported.to_string(), unsupported.message());
+        let failed = presence(&Doubled::answering(vec![exited(51, "")]))
+            .expect_err("exit 51 is not an answer");
+        assert_eq!(failed.to_string(), failed.message());
+    }
+
+    #[test]
+    fn a_store_that_could_not_be_asked_is_not_an_absent_item() {
+        // The one confusion this module may not make: a question that did not
+        // happen is not "there is no item". Reading it as one is how a pane
+        // comes to tell a person the key they saved has gone.
+        let reason = "cannot run /usr/bin/security: No such file or directory";
+        let store = Doubled::answering(vec![could_not_run(reason)]);
+        let refused = presence(&store).expect_err("not an answer");
+        assert_eq!(refused.message(), reason);
+    }
+
+    #[test]
+    fn a_query_killed_by_a_signal_is_not_an_absent_item_either() {
+        let store = Doubled::answering(vec![signalled()]);
+        let refused = presence(&store).expect_err("a signal");
+        assert!(
+            refused.message().contains("killed by a signal"),
+            "{}",
+            refused.message()
+        );
+    }
+
+    #[test]
+    fn the_attribute_dump_is_the_one_question_that_keeps_what_the_tool_printed() {
+        let store = Doubled::answering(vec![exited(
+            0,
+            "svce<blob>=\"whirl-wallhaven\"\npassword: \"fake-token-not-a-real-key\"\n",
+        )]);
+        let lines = attributes(&store).expect("the attributes");
+        assert!(lines.iter().any(|line| line.contains(SERVICE)), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("fake-token-not-a-real-key")),
+            "{lines:?}"
+        );
+        assert!(
+            store.asked()[0].keep_output,
+            "the dump is asked for, and kept"
+        );
+    }
+
+    #[test]
+    fn an_absent_item_has_no_attributes_and_a_query_that_did_not_answer_has_none_either() {
+        assert_eq!(
+            attributes(&Doubled::answering(vec![exited(ITEM_NOT_FOUND, "")])),
+            Ok(Vec::new())
+        );
+        let refused = attributes(&Doubled::answering(vec![exited(7, "")]))
+            .expect_err("exit 7 is not an answer");
+        assert!(
+            refused.message().contains("exited 7"),
+            "{}",
+            refused.message()
+        );
+        assert!(
+            attributes(&Doubled::answering(vec![signalled()])).is_err(),
+            "a signal is not an empty set of attributes"
+        );
+        assert!(
+            attributes(&Doubled::answering(vec![could_not_run("no store")])).is_err(),
+            "a store that could not be asked has not answered"
+        );
+    }
+
+    #[test]
+    fn a_write_feeds_the_hex_line_on_stdin_and_then_asks_whether_the_item_landed() {
+        let store = Doubled::answering(vec![exited(0, ""), exited(0, "")]);
+        assert_eq!(write(&store, "fake-token-not-a-real-key"), Ok(()));
+        let asked = store.asked();
+        assert_eq!(asked.len(), 2, "the write, and the query that confirms it");
+        assert_eq!(asked[0].args, vec!["-i".to_string()]);
+        assert_eq!(
+            asked[0].input,
+            Some(add_line(&hex(b"fake-token-not-a-real-key")).into_bytes()),
+            "the line goes in on standard input"
+        );
+        assert!(!asked[0].keep_output, "the write keeps no output");
+        assert_eq!(
+            asked[1].args,
+            query(),
+            "the confirmation is the presence query"
+        );
+    }
+
+    #[test]
+    fn a_write_the_store_refused_is_a_failure_that_names_the_step() {
+        let store = Doubled::answering(vec![exited(1, "")]);
+        let refused = write(&store, "fake-token-not-a-real-key").expect_err("a refused write");
+        assert_eq!(
+            refused.message(),
+            format!("{SECURITY} add-generic-password -U -a {ACCOUNT} -s {SERVICE} exited 1")
+        );
+        assert_eq!(
+            store.asked().len(),
+            1,
+            "a write that failed is not confirmed"
+        );
+    }
+
+    #[test]
+    fn a_write_the_store_took_but_that_left_no_item_is_still_a_failure() {
+        // Exit 0 from `security -i` describes the session, not the one line, so
+        // the write is confirmed by the query afterwards. A store that took the
+        // write and holds nothing must not read as a saved key.
+        let store = Doubled::answering(vec![exited(0, ""), exited(ITEM_NOT_FOUND, "")]);
+        let refused = write(&store, "fake-token-not-a-real-key").expect_err("nothing landed");
+        assert_eq!(
+            refused.message(),
+            format!("the store answered the write but holds no item for service {SERVICE}")
+        );
+    }
+
+    #[test]
+    fn a_write_that_could_not_be_run_is_the_stores_own_reason() {
+        let store = Doubled::answering(vec![could_not_run(
+            "cannot write to /usr/bin/security: broken pipe",
+        )]);
+        let refused =
+            write(&store, "fake-token-not-a-real-key").expect_err("the write did not happen");
+        assert_eq!(
+            refused.message(),
+            "cannot write to /usr/bin/security: broken pipe"
+        );
+    }
+
+    #[test]
+    fn a_write_killed_by_a_signal_says_so_rather_than_naming_a_code() {
+        let store = Doubled::answering(vec![signalled()]);
+        let refused =
+            write(&store, "fake-token-not-a-real-key").expect_err("a signal is not a success");
+        assert!(
+            refused.message().ends_with("exited on a signal"),
+            "{}",
+            refused.message()
+        );
     }
 }
