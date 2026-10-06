@@ -128,13 +128,13 @@ jobs:
       # floor missed and by how much. The numbers are here, each beside what it was
       # measured from.
       #
-      # Both are measured on this branch with the command above, and both depend on one thing
-      # outside the crate: the tests that reach a daemon skip when nothing answers the socket
-      # (`crates/whirl-ui/tests/settings.rs`), so a machine whose daemon is up measures more
-      # covered lines in `dump.rs` than one without. A runner has no daemon, and that is the
-      # pair measured here: the whole workspace at 73.77% of 8039 lines, 2109 of them
-      # uncovered, and this report with the drawing left out at 86.22% of 5828, 803 uncovered.
-      # Each floor sits under the no-daemon pair by more than that swing rather than on it.
+      # Both are measured by this job on a runner, from the command above, and both depend on
+      # one thing outside the crate: the tests that reach a daemon skip when nothing answers
+      # the socket (`crates/whirl-ui/tests/settings.rs`), so a machine whose daemon is up
+      # measures more covered lines in `dump.rs` than one without. A runner has no daemon, and
+      # that is the pair measured there: the whole workspace at 72.55% of 8039 lines, 2207 of
+      # them uncovered, and this report with the drawing left out at 84.54% of 5828, 901
+      # uncovered. Each floor sits under that pair rather than on it.
       #
       # The first floor is the total, the number a reader asks for.
       #
@@ -153,10 +153,10 @@ jobs:
       # from it.
       - name: The two floors
         env:
-          # 73.77% with no daemon answering, so the floor is 3.77 points under the measurement
-          # and 302 lines of it.
+          # 72.55% on the runner, so the floor is 2.55 points under the measurement and 204
+          # lines of it.
           TOTAL_FLOOR: "70"
-          # 86.22% the same way: 2.22 points and 129 lines under it.
+          # 84.54% the same way: 0.54 points and 31 lines under it.
           DECISION_FLOOR: "84"
           DRAWING: 'whirl-ui/src/(app|tray|window|theme)\.rs$'
         run: sh scripts/check-coverage.sh
