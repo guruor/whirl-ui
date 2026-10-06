@@ -16,16 +16,23 @@
 //! value, and the words beside it are exactly what the command printed, so a
 //! refusal is shown rather than replaced with a route of the app's own.
 //!
-//! Nothing here writes a unit file, unlinks a socket, or kills a process, and
+//! Nothing here writes a unit file, unlinks a socket, or signals the daemon, and
 //! this module never reads or opens the control socket: the daemon's lifecycle
-//! is the daemon's. Watching whether the socket file is *there* is a different
-//! thing, and it is not here: it is the tray's one observation, a `stat` that
-//! takes the app's view offline, and it changes nothing about the daemon.
+//! is the daemon's. The one process it may end is its own child, when that child
+//! does not answer within `DEADLINE`: a wait that never returns is the one
+//! failure this app must never have, and ending the child the app started is not
+//! a control of the daemon. Watching whether the socket file is *there* is a
+//! different thing, and it is not here: it is the tray's one observation, a
+//! `stat` that takes the app's view offline, and it changes nothing about the
+//! daemon.
 
 use std::env;
 use std::ffi::OsStr;
+use std::io::{Error, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// The command's own name: the basename every candidate shares, and the name
 /// looked up on `PATH` last.
@@ -215,6 +222,11 @@ pub enum Outcome {
     Missing(String),
     /// The command could not be run, or ended without an exit code.
     Failed(String),
+    /// The command did not answer within the app's deadline and was ended, so
+    /// there are no words of the daemon's at all. The sentence is the app's own,
+    /// and it deliberately does not read as a refusal: the daemon never
+    /// answered.
+    Unanswered(String),
 }
 
 impl Outcome {
@@ -226,7 +238,8 @@ impl Outcome {
             | Outcome::Unreachable(words)
             | Outcome::Usage(words)
             | Outcome::Missing(words)
-            | Outcome::Failed(words) => words,
+            | Outcome::Failed(words)
+            | Outcome::Unanswered(words) => words,
         }
     }
 
@@ -242,6 +255,10 @@ impl Outcome {
             Outcome::Done(_) => 0,
             Outcome::Refused(_) => 1,
             Outcome::Unreachable(_) => 2,
+            // A wait that ran out is the same family as unreachable: the
+            // supervisor could not be asked, so there is no daemon to report.
+            // Deliberately not 1, which would read as the daemon refusing.
+            Outcome::Unanswered(_) => 2,
             // The command line cannot work: the command is not there, it could
             // not be run, or it does not know the verb.
             Outcome::Usage(_) | Outcome::Missing(_) | Outcome::Failed(_) => 3,
@@ -249,11 +266,147 @@ impl Outcome {
     }
 }
 
+/// How long the app waits for the daemon's own command to answer.
+///
+/// The wait this bounds is a supervisor call, not a rotation: the installed
+/// `whirl daemon status` answered in 60-80 ms on the development machine
+/// (measured 2026-10-06, twenty runs), and `install` and `uninstall` add one
+/// supervisor call each on top of that. Thirty seconds is roughly four hundred
+/// times the measured status, so a step that is merely slow still finishes, and a
+/// child that never answers is ended rather than waited on, which is the one
+/// failure this app must never have.
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// `WHIRL_UI_DAEMON_DEADLINE_MS` names the deadline in milliseconds.
+///
+/// The override is a test's input rather than something the app offers a user:
+/// this app's own tests drive a stand-in `whirl` that sleeps past the bound, and
+/// waiting out the real bound twice would only make the suite slow. It is the
+/// same kind of seam as `WHIRL_UI_RECEIPT`. A value that is missing or not a
+/// number means [`DEADLINE`].
+const DEADLINE_MS: &str = "WHIRL_UI_DAEMON_DEADLINE_MS";
+
+/// How often a wait looks at its child between checks.
+const POLL: Duration = Duration::from_millis(10);
+
+/// The bound for one wait: [`DEADLINE`], or the one
+/// `WHIRL_UI_DAEMON_DEADLINE_MS` names.
+fn deadline() -> Duration {
+    match env::var(DEADLINE_MS)
+        .ok()
+        .and_then(|milliseconds| milliseconds.parse::<u64>().ok())
+    {
+        Some(milliseconds) => Duration::from_millis(milliseconds),
+        None => DEADLINE,
+    }
+}
+
+/// What one bounded wait for a child produced.
+enum Answer {
+    /// The child exited: the code and both streams are what it left.
+    Exited(ExitStatus, Vec<u8>, Vec<u8>),
+    /// The child did not exit within the deadline and was ended, so it gave no
+    /// answer at all. The duration is the bound that ran out.
+    Expired(Duration),
+    /// The child could not be started, or the wait itself failed.
+    Failed(Error),
+}
+
+/// Run one command and wait at most its deadline for an answer.
+///
+/// This is `Command::output()` with a bound. The child's two streams are read on
+/// threads of their own, so a child that fills a pipe cannot deadlock the wait,
+/// and this thread polls for the exit instead of blocking on it. On expiry the
+/// child is killed and reaped, so no zombie and no wedged process is left behind,
+/// and the caller learns the wait ran out rather than that something refused.
+fn ask(program: &Path, arguments: &[&str], deadline: Duration) -> Answer {
+    let mut child = match Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return Answer::Failed(error),
+    };
+    let stdout = child.stdout.take().map(drained);
+    let stderr = child.stderr.take().map(drained);
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout.map(joined).unwrap_or_default();
+                let stderr = stderr.map(joined).unwrap_or_default();
+                return Answer::Exited(status, stdout, stderr);
+            }
+            Ok(None) => {
+                if start.elapsed() >= deadline {
+                    // Ended and reaped here, so nothing is left behind.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout.map(joined);
+                    let _ = stderr.map(joined);
+                    return Answer::Expired(deadline);
+                }
+                thread::sleep(POLL);
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Answer::Failed(error);
+            }
+        }
+    }
+}
+
+/// Read one of the child's streams to its end on a thread of its own.
+///
+/// The stream has to be drained while the wait runs: a child that fills a pipe
+/// blocks on the write and would never exit, and the deadline would then fire on
+/// a step that was working.
+fn drained(pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// What a draining thread read, or nothing when it panicked.
+fn joined(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    handle.join().unwrap_or_default()
+}
+
+/// A deadline as the app's own sentences spell it: seconds from a second up,
+/// milliseconds below it, so a test's short bound reads as what it is.
+fn bound(waited: Duration) -> String {
+    if waited.as_secs() >= 1 {
+        format!("{} s", waited.as_secs())
+    } else {
+        format!("{} ms", waited.as_millis())
+    }
+}
+
+/// The app's own sentence for a command it ended because it did not answer.
+///
+/// It names the command and the bound, and it says plainly that the daemon did
+/// not refuse: a wait that ran out is not a refusal, and the two must never read
+/// the same.
+fn did_not_answer(command: &str, waited: Duration) -> String {
+    format!(
+        "`{command}` did not answer within {}, so the app ended it rather than wait. The daemon did not refuse: it never answered, so this step is neither done nor refused.",
+        bound(waited)
+    )
+}
+
 /// Ask `whirl daemon <verb>`, and answer with what it said.
 ///
 /// **This is the one place in this app where a process is started for the
 /// daemon's lifecycle.** It is `whirl daemon …` and nothing else: no `whirld`,
-/// no unit file, no socket, no `kill`. The command is found by [`resolve`],
+/// no unit file, no socket, and nothing of the daemon's is signalled. The
+/// command is found by [`resolve`],
 /// which follows the installer's own record rather than a bare `PATH` lookup,
 /// so the daemon the installer installed is the daemon the app runs. A stand-in
 /// named `whirl` on `PATH` is still enough to test the whole path headlessly,
@@ -263,25 +416,36 @@ impl Outcome {
 /// wrong way: `<path> --version`, when the command did not know the `daemon`
 /// verb. It is not a lifecycle step, and it is never reached on the path that
 /// runs a real daemon.
+///
+/// Neither wait is unbounded: each is given [`DEADLINE`], and a child that does
+/// not answer within it is ended. Ending this app's own child is not a control of
+/// the daemon: nothing is signalled but that child, nothing is written, and no
+/// second route is taken.
 pub fn run(verb: Verb) -> Outcome {
     let Some(program) = resolve() else {
         return Outcome::Missing(not_found(verb));
     };
     let arguments = ["daemon", verb.word()];
-    match Command::new(&program).args(arguments).output() {
-        Ok(output) => match classify(
-            output.status.code(),
-            &text(&output.stdout),
-            &text(&output.stderr),
-        ) {
-            // Exit 3 is the CLI's usage error, which is what a binary older
-            // than the `daemon` verb answers with. The app says which binary it
-            // ran, and the version when that binary can name one, rather than
-            // leaving the usage text to look like the app's own mistake.
-            Outcome::Usage(usage) => Outcome::Usage(not_the_daemon_command(verb, &program, &usage)),
-            outcome => outcome,
-        },
-        Err(error) => Outcome::Failed(format!(
+    match ask(&program, &arguments, deadline()) {
+        Answer::Exited(status, stdout, stderr) => {
+            match classify(status.code(), &text(&stdout), &text(&stderr)) {
+                // Exit 3 is the CLI's usage error, which is what a binary older
+                // than the `daemon` verb answers with. The app says which binary it
+                // ran, and the version when that binary can name one, rather than
+                // leaving the usage text to look like the app's own mistake.
+                Outcome::Usage(usage) => {
+                    Outcome::Usage(not_the_daemon_command(verb, &program, &usage))
+                }
+                outcome => outcome,
+            }
+        }
+        // A child the app ended got no answer out of the daemon, so the sentence
+        // is the app's own and says so. It is not a refusal.
+        Answer::Expired(since) => Outcome::Unanswered(did_not_answer(
+            &format!("{} daemon {}", program.display(), verb.word()),
+            since,
+        )),
+        Answer::Failed(error) => Outcome::Failed(format!(
             "`{} daemon {}` could not be run: {error}",
             program.display(),
             verb.word()
@@ -306,15 +470,21 @@ fn not_found(verb: Verb) -> String {
 /// `whirl version` is not the way to identify a binary without a daemon: it is
 /// `Invocation::Ask(Request::Version)` (`whirl`'s `main.rs:143`), so it asks a
 /// running daemon over the socket. `--version` is the static answer a later
-/// build adds; when the binary has it the version is quoted, and when it does
-/// not, the silence is itself the evidence, because the flag is part of the
-/// build the app needs.
+/// build adds; when the binary has it the version is quoted, when it does not
+/// the silence is itself the evidence, because the flag is part of the build the
+/// app needs, and when the flag never answers the app says that instead, because
+/// a command it ended is not the same evidence as a command that said nothing.
 fn not_the_daemon_command(verb: Verb, program: &Path, usage: &str) -> String {
     let identity = match version_of(program) {
-        Some(version) => format!("`{}` (version {version})", program.display()),
-        None => format!(
+        Version::Named(version) => format!("`{}` (version {version})", program.display()),
+        Version::Silent => format!(
             "`{}`, which reports no version (`--version` answers nothing, so it predates that flag)",
             program.display()
+        ),
+        Version::Unanswered(waited) => format!(
+            "`{}` (whose `--version` was ended by the app: it did not answer within {})",
+            program.display(),
+            bound(waited)
         ),
     };
     format!(
@@ -323,18 +493,38 @@ fn not_the_daemon_command(verb: Verb, program: &Path, usage: &str) -> String {
     )
 }
 
+/// What a binary's `--version` answered.
+enum Version {
+    /// The flag answered: this is its first line.
+    Named(String),
+    /// The flag answered nothing: it is not this binary's command, or the binary
+    /// failed or printed nothing. The silence is the evidence of a build from
+    /// before the flag.
+    Silent,
+    /// The flag did not answer within the deadline and was ended, so the silence
+    /// is the app's own bound and not the old binary's evidence.
+    Unanswered(Duration),
+}
+
 /// A binary's own `--version` line, when that flag answers.
 ///
 /// Only a successful, non-empty answer counts: a binary from before the flag
 /// exists exits non-zero or says nothing, and both mean there is no version to
-/// report, which the caller says in words instead.
-fn version_of(program: &Path) -> Option<String> {
-    let output = Command::new(program).arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
+/// report, which the caller says in words instead. This wait is bounded like the
+/// wait for a verb: a `--version` that never returns is ended rather than waited
+/// on, and the caller is told which of the two silences it got.
+fn version_of(program: &Path) -> Version {
+    match ask(program, &["--version"], deadline()) {
+        Answer::Exited(status, stdout, _) if status.success() => {
+            match text(&stdout).lines().next() {
+                Some(line) => Version::Named(line.to_string()),
+                None => Version::Silent,
+            }
+        }
+        Answer::Exited(..) => Version::Silent,
+        Answer::Expired(waited) => Version::Unanswered(waited),
+        Answer::Failed(_) => Version::Silent,
     }
-    let line = text(&output.stdout);
-    line.lines().next().map(str::to_string)
 }
 
 /// The CLI's exit code as an outcome, with the words the code's stream carries.
