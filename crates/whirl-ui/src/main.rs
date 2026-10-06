@@ -97,10 +97,11 @@ modes:
   --screenshot <path> [state]
                         run the window, write it to a PNG, and exit. The state
                         names the pane to photograph and any control to open on
-                        it. The panes are sources (the default), rotation, app
-                        and about; the control states are chooser and key (on
-                        the Sources pane), rejected and words (on Rotation), and
-                        check-newer, check-newest and check-failed (the About
+                        it. The panes are sources (the default), rotation, helper
+                        (the Background Helper) and control-panel (the Control
+                        Panel), and about; the control states are chooser and key
+                        (on the Sources pane), rejected and words (on Rotation),
+                        and check-newer, check-newest and check-failed (the About
                         pane's release check, one outcome each), and each one is
                         put on through the same method the control it shows calls
   --check-update        make the release check the About pane's button makes,
@@ -110,8 +111,8 @@ modes:
                         or status. Exit 0 when the step was done, 1 when whirl
                         refused, 2 when there is no supervised daemon to reach,
                         3 when the verb or its arguments do not make a command
-                        line. This is the same call the menu's `Start whirl`
-                        row and the window's control make.
+                        line. This is the same call the Background Helper pane's
+                        controls make.
   --launch              the launch offer: ask `whirl daemon status`, and on the
                         app's first run install the unit for an absent daemon
                         (macOS)
@@ -251,7 +252,7 @@ fn main() -> ExitCode {
 ///
 /// The window is the one deliverable a test cannot open, so a screenshot is how
 /// it becomes evidence rather than a claim about it. These are the states worth a
-/// photograph: the four panes, the controls that open on two of them, and the
+/// photograph: the five panes, the controls that open on two of them, and the
 /// About pane's release check in each of its three outcomes. Each one is put on
 /// through the same method the control calls rather than by drawing something
 /// that resembles it.
@@ -270,8 +271,10 @@ enum Snap {
     Sources,
     /// The Rotation pane.
     Rotation,
-    /// The App pane.
-    App,
+    /// The Background Helper pane, with its two groups open.
+    Helper,
+    /// The Control Panel pane.
+    ControlPanel,
     /// The About pane, as the window opens: no check made yet.
     About,
     /// The folder chooser, open on where a new source would start.
@@ -294,10 +297,11 @@ enum Snap {
 
 impl Snap {
     /// Every state, in the order the usage line lists them.
-    const ALL: [Snap; 11] = [
+    const ALL: [Snap; 12] = [
         Snap::Sources,
         Snap::Rotation,
-        Snap::App,
+        Snap::Helper,
+        Snap::ControlPanel,
         Snap::About,
         Snap::Chooser,
         Snap::Key,
@@ -309,15 +313,16 @@ impl Snap {
     ];
 
     /// The states as the usage line spells them.
-    const NAMES: &'static str = "sources, rotation, app, about, chooser, key, rejected, words, \
-                                 check-newer, check-newest, check-failed";
+    const NAMES: &'static str = "sources, rotation, helper, control-panel, about, chooser, key, \
+                                 rejected, words, check-newer, check-newest, check-failed";
 
     /// The word a command line uses for this state.
     fn name(self) -> &'static str {
         match self {
             Snap::Sources => "sources",
             Snap::Rotation => "rotation",
-            Snap::App => "app",
+            Snap::Helper => "helper",
+            Snap::ControlPanel => "control-panel",
             Snap::About => "about",
             Snap::Chooser => "chooser",
             Snap::Key => "key",
@@ -339,7 +344,14 @@ impl Snap {
         match self {
             Snap::Sources => settings.pane = Pane::Sources,
             Snap::Rotation => settings.pane = Pane::Rotation,
-            Snap::App => settings.pane = Pane::App,
+            Snap::Helper => {
+                settings.pane = Pane::BackgroundHelper;
+                // Both groups open, so the state's own photograph carries what the
+                // pane holds rather than two headings.
+                settings.paths_open = true;
+                settings.advanced_open = true;
+            }
+            Snap::ControlPanel => settings.pane = Pane::ControlPanel,
             Snap::About => settings.pane = Pane::About,
             Snap::CheckNewer => {
                 settings.pane = Pane::About;
@@ -691,11 +703,11 @@ const LOGIN_ITEM_VERBS: &str = "--login-item takes a verb: status, register or u
 
 /// `whirl daemon <verb>`, the daemon's own lifecycle command, without a tray.
 ///
-/// The mode is the same call the menu's `Start whirl` row and the window's
-/// control make, so what a terminal prints here is what the window would show
-/// after the same click. It makes no decision of its own: the command's words
-/// are printed as it said them, and the exit code is the one section 8 item 7
-/// gives that outcome.
+/// The mode is the same call the menu's `Start whirl` row and the Background
+/// Helper pane's controls make, so what a terminal prints here is what the
+/// window would show after the same click. It makes no decision of its own: the
+/// command's words are printed as it said them, and the exit code is the one
+/// section 8 item 7 gives that outcome.
 fn daemon_command(args: &[String]) -> ExitCode {
     let Some(verb) = args.first().and_then(|word| daemon_cli::Verb::parse(word)) else {
         return usage(DAEMON_VERBS);
