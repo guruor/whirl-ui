@@ -6,7 +6,7 @@
 #
 # `install.sh` names the two releases it installs as defaults of its own:
 #
-#   WHIRL_UI_VERSION   the app release, this repository's, so it is 0.2.3 at tag v0.2.3
+#   WHIRL_UI_VERSION   the app release, this repository's, so it is 0.2.4 at tag v0.2.4
 #   WHIRL_VERSION      the daemon release, the other repository's, so it is v0.2.1 at the same tag
 #
 # They are two different questions, and the difference matters.

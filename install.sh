@@ -48,7 +48,7 @@
 # "download, read, run". Piping it into a shell is offered beside that route, never
 # instead of it:
 #
-#   curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.3/install.sh
+#   curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.4/install.sh
 #   less install.sh
 #   sh install.sh
 #
@@ -56,7 +56,7 @@
 # the same script can install a build that is not the published one, and so an
 # acceptance run can install into a throwaway prefix with no network.
 #
-#   WHIRL_UI_VERSION   0.2.3               the app release; the tag is v0.2.3
+#   WHIRL_UI_VERSION   0.2.4               the app release; the tag is v0.2.4
 #   WHIRL_UI_BASE      the release download where Whirl-<version>.zip lives
 #   WHIRL_UI_ARCHIVE   <path or URL>       use this archive, skip the download
 #   WHIRL_UI_SHA256    <path or URL>       its checksum; default <archive>.sha256
@@ -111,7 +111,7 @@ Exit codes: 0 ok; 1 refused (platform, download, checksum, unwritable destinatio
 authorization this script cannot ask for, and nothing was installed.
 
 Overrides (optional; the defaults are the published release):
-  WHIRL_UI_VERSION   0.2.3
+  WHIRL_UI_VERSION   0.2.4
   WHIRL_UI_ARCHIVE   path or URL of Whirl-<version>.zip
   WHIRL_UI_SHA256    path or URL of its checksum
   WHIRL_UI_PREFIX    /Applications
@@ -166,7 +166,7 @@ esac
 # the defaults, and the overrides
 # ---------------------------------------------------------------------------
 
-WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.3}
+WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.4}
 WHIRL_VERSION=${WHIRL_VERSION:-v0.2.1}
 
 ui_prefix=${WHIRL_UI_PREFIX:-/Applications}
