@@ -35,10 +35,13 @@ use eframe::egui::{
 
 use crate::about;
 use crate::settings::{
-    self, ABOUT_LINE, ABOUT_TITLE, APP_DAEMON_NOTE, CHECK_LABEL, CHECK_LINE, CHECK_TITLE,
-    COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE, Daemon, KEY_LINE, Kind, NO_SOURCES,
-    PICKER_TITLE, Pane, ROTATION_LINE, ROTATION_TITLE, SOURCES_LINE, SOURCES_TITLE, START_LABEL,
-    START_LINE, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
+    self, ABOUT_LINE, ABOUT_TITLE, ADVANCED_LINES, ADVANCED_TITLE, CHECK_AGAIN, CHECK_LABEL,
+    CHECK_LINE, CHECK_TITLE, COLLECTION_LINE, COLLECTION_TITLE, COLLECTION_TOKEN_NOTE,
+    CONFIRM_REMOVE_HELPER, CONFIRM_REMOVE_WHIRL, CONTROL_PANEL_LINE, CONTROL_PANEL_TITLE, Daemon,
+    HELPER_LINE, HELPER_TITLE, KEY_LINE, Kind, LAUNCH_LINE, LAUNCH_TITLE, LOGIN_ITEMS, NO_SOURCES,
+    OPEN_AT_LOGIN, OPEN_AT_LOGIN_LINE, PATH_ROWS, PATHS_TITLE, PICKER_TITLE, Pane, REMOVE_HELPER,
+    REMOVE_WHIRL, REMOVE_WHIRL_LINE, REMOVE_WHIRL_ROUTE, ROTATION_LINE, ROTATION_TITLE,
+    SOURCES_LINE, SOURCES_TITLE, START_NOW, SUBTITLE, Settings, SystemPanel, Unit, WINDOW_TITLE,
 };
 use crate::state::View;
 use crate::theme;
@@ -74,6 +77,12 @@ pub struct App {
     capture: Option<PathBuf>,
     /// Whether the screenshot has been asked for yet.
     requested: bool,
+    /// The pane the last pass drew, so the pane that opens this pass is a change
+    /// the two switches can be read on.
+    shown: Option<Pane>,
+    /// Whether the window was focused on the last pass, so a focus arriving is a
+    /// change too.
+    focused: bool,
 }
 
 impl App {
@@ -89,6 +98,8 @@ impl App {
             quit: false,
             capture: None,
             requested: false,
+            shown: None,
+            focused: false,
         }
     }
 
@@ -266,11 +277,29 @@ impl eframe::App for App {
         let Some(settings) = self.settings.as_mut() else {
             return;
         };
+        // The two switches are states and never a cache: another client can change
+        // the unit at any moment, so the Background Helper's pane reads
+        // `whirl daemon status` when it is shown and again whenever the window
+        // gains focus, and the Control Panel's pane reads macOS's login item with
+        // the same rule. The pane the last pass drew is what makes "shown" a
+        // change rather than every frame, and the read happens before this pass
+        // draws the pane it belongs to.
+        let focused = ui.ctx().input(|input| input.focused);
+        let opened = self.shown != Some(settings.pane);
+        if opened || (focused && !self.focused) {
+            match settings.pane {
+                Pane::BackgroundHelper => settings.read_helper(),
+                Pane::ControlPanel => settings.read_login(),
+                Pane::Sources | Pane::Rotation | Pane::About => {}
+            }
+        }
+        self.shown = Some(settings.pane);
+        self.focused = focused;
         panes(ui, settings);
     }
 }
 
-/// Draw the window: the app's mark and its four panes, on one rail.
+/// Draw the window: the app's mark and its five panes, on one rail.
 ///
 /// The menu bar item's `Settings…` row and the standalone window are the same
 /// window, and this is what makes them the same: one body, drawn from one
@@ -281,9 +310,9 @@ impl eframe::App for App {
 /// pane rows and a status footer, and a centre panel carrying the pane's title
 /// and the pane itself. The pane list is the sidebar's alone: the centre panel's
 /// top strip is reserved for a pane's own sub-views and carries no control over
-/// the panes (see [`header`]). The four panes are the four blocks the window
-/// has always drawn; naming them adds no pane, and the sidebar lists exactly them
-/// rather than the reference's future sections.
+/// the panes (see [`header`]). The five panes are the five blocks [`Settings`]
+/// has, and the sidebar lists exactly them rather than the reference's future
+/// sections.
 ///
 /// While the folder chooser is open it is the whole centre panel: the choice it
 /// is making is the only thing on screen, and a half-drawn list of folders under
@@ -307,7 +336,8 @@ pub(crate) fn panes(ui: &mut egui::Ui, settings: &mut Settings) {
                 .show(ui, |ui| match settings.pane {
                     Pane::Sources => sources(ui, settings),
                     Pane::Rotation => rotation(ui, settings),
-                    Pane::App => app_pane(ui, settings),
+                    Pane::BackgroundHelper => background_helper(ui, settings),
+                    Pane::ControlPanel => control_panel(ui, settings),
                     Pane::About => about_pane(ui, settings),
                 });
         });
@@ -788,82 +818,235 @@ fn rotation(ui: &mut egui::Ui, settings: &mut Settings) {
     }
 }
 
-/// The App pane: whether whirl answered, and where a change is written.
+/// The Background Helper pane: the part of Whirl that keeps running after this
+/// window closes, and the one switch that decides whether it comes back at login.
 ///
-/// The daemon's own sentence is drawn in full from [`Daemon::line`], so this
-/// pane and `--dump-settings` say the same thing; the reference's disconnected
-/// state is what that sentence looks like when the socket did not answer, and it
-/// is drawn as an error card rather than a status light.
-fn app_pane(ui: &mut egui::Ui, settings: &mut Settings) {
-    let connected = settings.daemon.answered();
-    let outline = if connected {
-        theme::HAIRLINE
-    } else {
-        theme::STATE_BAD
-    };
-    // Read before the body draws, so the click below is the only thing that
-    // changes the control's answer.
-    let daemon_line = settings.daemon.line();
-    let version = settings.running_version();
-    let action = settings.daemon_action.clone();
-    let mut pressed = false;
-    surface(ui, outline, |ui| {
+/// The switch is drawn from [`Settings::helper`], which is a state read from
+/// Whirl's own `status`, and never from what a click asked for: a click that was
+/// refused leaves it where the unit actually is, because every control here calls
+/// a method that re-reads afterwards. The read itself belongs to [`App::ui`] and
+/// happens when the pane opens and when the window is focused.
+///
+/// The two groups are collapsed, and which of them is open is [`Settings`]'s
+/// value rather than egui's, so the window and `--dump-settings` cannot disagree
+/// about what is on screen.
+fn background_helper(ui: &mut egui::Ui, settings: &mut Settings) {
+    let position = settings.launch_position();
+    let readable = position.is_some();
+    let mut on = position.unwrap_or(false);
+    let state_line = settings.launch_state_line();
+    let version = settings.helper_version_line();
+    let action = settings.helper_action.clone();
+    let start_now = settings
+        .helper
+        .as_ref()
+        .is_some_and(settings::Helper::start_now);
+    let confirming = settings.confirming == Some(settings::Removal::Helper);
+    let mut launch = None;
+    let mut start = false;
+    let mut again = false;
+    let mut remove = false;
+
+    surface(ui, theme::HAIRLINE, |ui| {
+        section(ui, HELPER_TITLE);
+        ui.add_space(theme::SPACE_XS);
+        note(ui, HELPER_LINE);
+        ui.add_space(theme::SPACE_MD);
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(
-                rect.center(),
-                5.0,
-                if connected {
-                    theme::STATE_OK
-                } else {
-                    theme::STATE_BAD
-                },
-            );
+            // A state that could not be read has no position to offer, so the
+            // control is drawn disabled rather than at a guessed side.
+            ui.add_enabled_ui(readable, |ui| {
+                if toggle(ui, &mut on) {
+                    launch = Some(on);
+                }
+            });
+            ui.add_space(theme::SPACE_SM);
             ui.label(
-                RichText::new(if connected { CONNECTED } else { NOT_CONNECTED })
-                    .size(theme::TEXT_SECTION)
-                    .color(if connected {
-                        theme::STATE_OK
-                    } else {
-                        theme::STATE_BAD
-                    }),
+                RichText::new(LAUNCH_TITLE)
+                    .size(theme::TEXT_BODY)
+                    .color(theme::TEXT_PRIMARY),
             );
         });
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, LAUNCH_LINE);
         ui.add_space(theme::SPACE_SM);
-        if !connected {
-            banner(ui, daemon_line.as_str(), theme::STATE_BAD);
+        note(ui, state_line.as_str());
+        if start_now {
+            // The middle state alone, and beside the status line it belongs to: a
+            // stopped unit is not a state a switch can show.
             ui.add_space(theme::SPACE_SM);
-            // The same control as the menu's `Start whirl` row, beside the line
-            // that says the daemon is not running: a window that reads as broken
-            // with no way forward is the defect this answers. Its answer is the
-            // daemon's own words, kept under it until the daemon answers again.
-            pressed = primary_button(ui, START_LABEL).clicked();
+            start = primary_button(ui, START_NOW).clicked();
+        }
+        if !readable {
+            ui.add_space(theme::SPACE_SM);
+            again = primary_button(ui, CHECK_AGAIN).clicked();
+        }
+        if let Some(line) = &action {
             ui.add_space(theme::SPACE_XS);
-            caption(ui, START_LINE);
-            if let Some(line) = &action {
-                ui.add_space(theme::SPACE_XS);
-                note(ui, line);
-            }
-            ui.add_space(theme::SPACE_SM);
-        } else {
-            note(ui, daemon_line.as_str());
+            note(ui, line);
+        }
+        ui.add_space(theme::SPACE_SM);
+        caption(ui, version.as_str());
+    });
+
+    ui.add_space(theme::SPACE_MD);
+
+    let mut paths_open = settings.paths_open;
+    group(ui, PATHS_TITLE, &mut paths_open, |ui| {
+        for row in PATH_ROWS {
+            caption(ui, row);
+        }
+        ui.add_space(theme::SPACE_XS);
+        if primary_button(ui, LOGIN_ITEMS).clicked() {
+            open_login_items();
+        }
+    });
+    settings.paths_open = paths_open;
+
+    ui.add_space(theme::SPACE_SM);
+
+    let mut advanced_open = settings.advanced_open;
+    group(ui, ADVANCED_TITLE, &mut advanced_open, |ui| {
+        for line in ADVANCED_LINES {
+            caption(ui, line);
+        }
+    });
+    settings.advanced_open = advanced_open;
+
+    ui.add_space(theme::SPACE_MD);
+
+    card(ui, |ui| {
+        if confirming {
+            banner(ui, CONFIRM_REMOVE_HELPER, theme::STATE_BAD);
             ui.add_space(theme::SPACE_SM);
         }
-        caption(ui, APP_DAEMON_NOTE);
-        ui.add_space(theme::SPACE_XS);
-        caption(ui, &format!("version v{version}"));
+        remove = primary_button(ui, REMOVE_HELPER).clicked();
     });
-    if pressed {
-        // The app's one route to the daemon's lifecycle: the daemon's own
-        // command. It is a synchronous click, which is the price of one process
-        // start, and nothing here spawns a daemon or writes a unit.
-        let outcome = crate::daemon_cli::run(crate::daemon_cli::Verb::Start);
-        settings.daemon_action = Some(outcome.words().to_string());
+
+    // Every one of these is a method, and the three that ask Whirl for something
+    // re-read afterwards: the switch never moves because a click said so.
+    if let Some(on) = launch {
+        settings.set_launch(on);
+    }
+    if start {
+        settings.start_now();
+    }
+    if again {
+        settings.read_helper();
+    }
+    if remove {
+        // The first press asks and the second is the removal, so a stray click
+        // cannot take the unit away.
+        if confirming {
+            settings.confirming = None;
+            settings.remove_helper();
+        } else {
+            settings.confirming = Some(settings::Removal::Helper);
+        }
+    }
+}
+
+/// The Control Panel pane: this window's own login item, and nothing else.
+///
+/// The row is [`crate::login_item`]'s and unchanged: what is drawn beside it is
+/// macOS's own answer, read when the pane opens and when the window is focused
+/// exactly as the Background Helper's switch is. The sub-line says the trade-off
+/// in plain words, so the two login rows cannot be read as one setting in two
+/// places.
+///
+/// There is no row for the menu bar icon: the icon exists exactly while this
+/// window runs, so the login flags are the only switch and a second control would
+/// say the same thing twice.
+fn control_panel(ui: &mut egui::Ui, settings: &mut Settings) {
+    let position = settings.login_position();
+    let readable = position.is_some();
+    let mut on = position.unwrap_or(false);
+    let state_line = settings.login_state_line();
+    let action = settings.login_action.clone();
+    let mut asked = None;
+    let mut again = false;
+
+    surface(ui, theme::HAIRLINE, |ui| {
+        section(ui, CONTROL_PANEL_TITLE);
+        ui.add_space(theme::SPACE_XS);
+        note(ui, CONTROL_PANEL_LINE);
+        ui.add_space(theme::SPACE_MD);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(readable, |ui| {
+                if toggle(ui, &mut on) {
+                    asked = Some(on);
+                }
+            });
+            ui.add_space(theme::SPACE_SM);
+            ui.label(
+                RichText::new(OPEN_AT_LOGIN)
+                    .size(theme::TEXT_BODY)
+                    .color(theme::TEXT_PRIMARY),
+            );
+        });
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, OPEN_AT_LOGIN_LINE);
+        ui.add_space(theme::SPACE_SM);
+        note(ui, state_line.as_str());
+        if !readable {
+            ui.add_space(theme::SPACE_SM);
+            again = primary_button(ui, CHECK_AGAIN).clicked();
+        }
+        if let Some(line) = &action {
+            ui.add_space(theme::SPACE_XS);
+            note(ui, line);
+        }
+    });
+
+    if let Some(on) = asked {
+        settings.set_login(on);
+    }
+    if again {
+        settings.read_login();
+    }
+}
+
+/// A collapsed group: its heading is the control and its body is drawn only while
+/// it is open.
+///
+/// The open state is the caller's rather than egui's, so the window, the text
+/// dump and a test all read the same value.
+fn group(ui: &mut egui::Ui, title: &str, open: &mut bool, add: impl FnOnce(&mut egui::Ui)) {
+    let arrow = if *open { "-" } else { "+" };
+    let response = ui.add(
+        egui::Button::new(
+            RichText::new(format!("{arrow} {title}"))
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(egui::Stroke::NONE),
+    );
+    if response.clicked() {
+        *open = !*open;
+    }
+    if *open {
+        ui.add_space(theme::SPACE_XS);
+        add(ui);
+    }
+}
+
+/// Open the Login Items pane of System Settings, where a person finishes a
+/// registration macOS kept for them.
+///
+/// macOS's own route, opened with macOS's own `open`; a platform this app ships no
+/// bundle for has nothing to open, so nothing happens there.
+fn open_login_items() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+            .spawn();
     }
 }
 
 /// The About pane: what this app is, which build is running, where its source
-/// is, the daemon, and the one request this app ever makes.
+/// is, a newer release, and the one removal row.
 ///
 /// The release check is a button and not a timer: pressing it is the whole of
 /// the trigger, and the answer is drawn under it. A check that could not be made
@@ -872,10 +1055,18 @@ fn app_pane(ui: &mut egui::Ui, settings: &mut Settings) {
 ///
 /// The source is a selectable label so it can be copied into a report rather
 /// than retyped from a screenshot.
+///
+/// The removal row does the Background Helper's removal and then says what it
+/// cannot do: the app bundle stays where it is, because removing what is in the
+/// installed location is a permission this window cannot ask for. The sentence
+/// saying so is the same on every platform; a platform with its own route adds
+/// one sentence and nothing more.
 fn about_pane(ui: &mut egui::Ui, settings: &mut Settings) {
     let version_lines = settings.version_lines();
-    let daemon_line = settings.daemon_line();
     let check = settings.check.clone();
+    let confirming = settings.confirming == Some(settings::Removal::Whirl);
+    let action = settings.remove_action.clone();
+    let mut remove = false;
 
     surface(ui, theme::HAIRLINE, |ui| {
         section(ui, ABOUT_TITLE);
@@ -895,8 +1086,6 @@ fn about_pane(ui: &mut egui::Ui, settings: &mut Settings) {
             )
             .selectable(true),
         );
-        ui.add_space(theme::SPACE_XS);
-        caption(ui, &daemon_line);
     });
 
     ui.add_space(theme::SPACE_MD);
@@ -922,6 +1111,36 @@ fn about_pane(ui: &mut egui::Ui, settings: &mut Settings) {
             settings.check_release();
         }
     });
+
+    ui.add_space(theme::SPACE_MD);
+
+    card(ui, |ui| {
+        if confirming {
+            banner(ui, CONFIRM_REMOVE_WHIRL, theme::STATE_BAD);
+            ui.add_space(theme::SPACE_SM);
+        }
+        remove = primary_button(ui, REMOVE_WHIRL).clicked();
+        ui.add_space(theme::SPACE_XS);
+        caption(ui, REMOVE_WHIRL_LINE);
+        if let Some(route) = REMOVE_WHIRL_ROUTE {
+            caption(ui, route);
+        }
+        if let Some(line) = &action {
+            ui.add_space(theme::SPACE_XS);
+            note(ui, line);
+        }
+    });
+
+    if remove {
+        // The first press asks and the second is the removal, so a stray click
+        // cannot take the Background Helper away.
+        if confirming {
+            settings.confirming = None;
+            settings.remove_whirl();
+        } else {
+            settings.confirming = Some(settings::Removal::Whirl);
+        }
+    }
 }
 
 /// The drawn folder browser: the folders inside one folder, and the two ways out.
@@ -1278,16 +1497,27 @@ mod tests {
     }
 
     #[test]
-    fn the_four_panes_are_the_four_blocks_the_window_prints() {
+    fn the_five_panes_are_the_five_blocks_the_window_prints() {
         // Naming the panes groups what the window already said; it adds none.
         // Each pane's heading is a block of the text dump, so a pane that lost
         // its heading would be a pane the dump does not carry.
         let settings = window();
         let text = settings.to_text();
         let names: Vec<&str> = Pane::ALL.into_iter().map(Pane::name).collect();
-        assert_eq!(names, vec!["Sources", "Rotation", "App", "About"]);
+        assert_eq!(
+            names,
+            vec![
+                "Sources",
+                "Rotation",
+                "Background Helper",
+                "Control Panel",
+                "About"
+            ]
+        );
         assert!(text.contains(SOURCES_TITLE), "{text}");
         assert!(text.contains(ROTATION_TITLE), "{text}");
+        assert!(text.contains(HELPER_TITLE), "{text}");
+        assert!(text.contains(CONTROL_PANEL_TITLE), "{text}");
         assert!(text.contains("whirl is not running"), "{text}");
         // The About pane is the block the check lives in.
         assert!(text.contains(ABOUT_TITLE), "{text}");
