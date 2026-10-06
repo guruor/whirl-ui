@@ -144,12 +144,20 @@ fn tilde(path: &Path) -> String {
     }
 }
 
-/// The three lifecycle steps the app is allowed to ask for. `install` and
-/// `uninstall` are deliberately absent: writing the login unit is the daemon's
-/// own onboarding, not a frontend's, and section 8 item 8 lists the five the
-/// daemon has while this app asks for three.
+/// The five lifecycle steps of the daemon's own command.
+///
+/// They are the CLI's five verbs and no others: `install` and `uninstall`
+/// change the login unit, `start` and `stop` ask the supervisor about the job
+/// it owns, and `status` asks what the supervisor says. The accepted decision
+/// (`whirl`'s ADR 0002, `docs/architecture.md` section 8 item 8) is that a
+/// frontend asks the daemon to change the unit rather than writing one itself,
+/// so all five are reachable here and nothing outside them is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    /// Write the login unit and load it, so the daemon comes back at login.
+    Install,
+    /// Stop the daemon and remove the login unit.
+    Uninstall,
     /// Ask the supervisor to run the job it already owns.
     Start,
     /// Ask the supervisor to unload the job.
@@ -160,11 +168,19 @@ pub enum Verb {
 
 impl Verb {
     /// Every verb, in the order this module names them.
-    pub const ALL: [Verb; 3] = [Verb::Start, Verb::Stop, Verb::Status];
+    pub const ALL: [Verb; 5] = [
+        Verb::Install,
+        Verb::Uninstall,
+        Verb::Start,
+        Verb::Stop,
+        Verb::Status,
+    ];
 
     /// The subcommand word, exactly as the CLI's usage spells it.
     pub fn word(self) -> &'static str {
         match self {
+            Verb::Install => "install",
+            Verb::Uninstall => "uninstall",
             Verb::Start => "start",
             Verb::Stop => "stop",
             Verb::Status => "status",
@@ -445,42 +461,58 @@ pub fn quit_prompt(remembered: Option<bool>, daemon_answering: bool) -> QuitProm
 
 /// What the app did about the daemon when it started.
 ///
-/// The first run is the only one that starts anything on its own. After that a
-/// daemon that is absent is offered, not started: an app that restarted a daemon
-/// somebody stopped on purpose would be overriding them.
+/// The first run is the only one that changes anything on its own. After that a
+/// daemon that is absent is offered, not installed or started: an app that
+/// reinstalled or restarted a daemon somebody turned off on purpose would be
+/// overriding them.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Launched {
     /// The supervisor already has the daemon running: nothing was asked of it
-    /// and nothing was started. The words are `whirl daemon status`'s.
+    /// and nothing was installed or started. The words are `whirl daemon
+    /// status`'s.
     Present(String),
-    /// The app's first run, and the daemon was absent: this is what the start
-    /// step said.
-    Started(Outcome),
+    /// The app's first run, and the daemon was absent: this is what the install
+    /// step said. Installing writes the login unit and loads it, so "installed"
+    /// and "comes back at login" are one action.
+    Installed(Outcome),
     /// Not the first run, and the daemon is absent: the control is offered and
-    /// nothing is started. The words are `whirl daemon status`'s.
+    /// nothing is installed or started. The words are `whirl daemon status`'s.
     Absent(String),
 }
 
-/// The launch offer: ask the supervisor, and start the daemon only on the first
-/// run and only when it is absent.
+/// The launch offer: ask the supervisor, and install the unit only on the first
+/// run and only when the daemon is absent.
 ///
 /// `whirl daemon status` is the question, and it is a question the CLI is meant
 /// to answer: exit 0 means the supervisor has the job running, and the daemon is
 /// left alone. Anything else means absent, and the first run hands it to
-/// `whirl daemon start`. The command is never asked to do more than that, and no
-/// second route is substituted when it refuses.
+/// `whirl daemon install`, which writes the login unit and loads it, so
+/// "installed" and "comes back at login" become one action. The command is never
+/// asked to do more than that, and no second route is substituted when it
+/// refuses.
+///
+/// The app's first run is recorded whichever way the decision went: after a run
+/// that found the daemon running, after one that installed it, and even when the
+/// install refused. So the record says "the app has decided", not "the app
+/// installed something": a user who later turns the background off is offered it
+/// on the next launch and is never reinstalled behind their back.
 #[cfg(target_os = "macos")]
 pub fn launch() -> Launched {
     let status = run(Verb::Status);
     if status.done() {
+        crate::prefs::mark_first_run_done();
         return Launched::Present(status.words().to_string());
     }
     if crate::prefs::first_run_done() {
         return Launched::Absent(status.words().to_string());
     }
+    // The first run, and no daemon: install the unit. The decision is recorded
+    // before the call, so it is the record of the decision rather than of its
+    // outcome: a refused install is not retried on every later launch, and a
+    // unit that is removed afterwards is not put back.
     crate::prefs::mark_first_run_done();
-    Launched::Started(run(Verb::Start))
+    Launched::Installed(run(Verb::Install))
 }
 
 /// Carry out a quit plan: remember the answer when asked, and stop the daemon
@@ -524,11 +556,13 @@ unit delegated
     }
 
     #[test]
-    fn the_three_verbs_round_trip_through_their_words() {
+    fn the_five_verbs_round_trip_through_their_words() {
         for verb in Verb::ALL {
             assert_eq!(Verb::parse(verb.word()), Some(verb), "{}", verb.word());
         }
-        for word in ["", "install", "uninstall", "restart", "Start", "start "] {
+        // `install` left this refused list on purpose: ADR 0002 gives the
+        // frontend the daemon's own install verb.
+        for word in ["", "restart", "Start", "start ", "install ", "Install"] {
             assert_eq!(Verb::parse(word), None, "{word:?}");
         }
     }

@@ -106,14 +106,15 @@ modes:
   --check-update        make the release check the About pane's button makes,
                         print its one line, and exit. It needs no daemon.
   --daemon <verb>       the daemon's own lifecycle command, run as
-                        `whirl daemon <verb>`: start, stop or status. Exit 0
-                        when the step was done, 1 when whirl refused, 2 when
-                        there is no supervised daemon to reach, 3 when the verb
-                        or its arguments do not make a command line. This is
-                        the same call the menu's `Start whirl` row and the
-                        window's control make.
+                        `whirl daemon <verb>`: install, uninstall, start, stop
+                        or status. Exit 0 when the step was done, 1 when whirl
+                        refused, 2 when there is no supervised daemon to reach,
+                        3 when the verb or its arguments do not make a command
+                        line. This is the same call the menu's `Start whirl`
+                        row and the window's control make.
   --launch              the launch offer: ask `whirl daemon status`, and on the
-                        app's first run start an absent daemon (macOS)
+                        app's first run install the unit for an absent daemon
+                        (macOS)
   --quit [--stop|--keep] [--dont-ask]
                         the quit path without a dialog: stop the daemon when
                         `--stop` (or the remembered answer) says so, and
@@ -715,14 +716,14 @@ fn daemon_command(args: &[String]) -> ExitCode {
 }
 
 /// The `--daemon` verbs, as the usage line spells them.
-const DAEMON_VERBS: &str = "--daemon takes a verb: start, stop or status";
+const DAEMON_VERBS: &str = "--daemon takes a verb: install, uninstall, start, stop or status";
 
 /// The launch offer, without a tray.
 ///
-/// On the app's first run an absent daemon is started through the daemon's own
-/// command and the answer is printed; after that a daemon that is absent is
-/// reported and left alone. A daemon the supervisor already runs is never
-/// touched.
+/// On the app's first run an absent daemon gets its unit installed through the
+/// daemon's own command and the answer is printed; after that a daemon that is
+/// absent is reported and left alone. A daemon the supervisor already runs is
+/// never touched.
 #[cfg(target_os = "macos")]
 fn launch_command() -> ExitCode {
     match daemon_cli::launch() {
@@ -736,10 +737,10 @@ fn launch_command() -> ExitCode {
             print_line("the daemon is not running: start it from the menu");
             ExitCode::from(EXIT_UNREACHABLE)
         }
-        daemon_cli::Launched::Started(outcome) => {
+        daemon_cli::Launched::Installed(outcome) => {
             if outcome.done() {
                 print_line(outcome.words());
-                print_line("the daemon was started");
+                print_line("the daemon was installed");
             } else {
                 eprintln!("{}", outcome.words());
             }
