@@ -485,7 +485,22 @@ impl Row {
             Kind::Folder { .. } => picture(count),
             Kind::Wallhaven { key, .. } => match key {
                 KeyState::Saved => format!("{} with the saved key", wallpaper(count)),
-                _ => format!("{} without a key, so it is public", wallpaper(count)),
+                KeyState::NeedsKey => {
+                    format!("{} without a key, so it is public", wallpaper(count))
+                }
+                // The daemon's record says how many pictures it found; it does not
+                // say whether the key is there. "Without a key, so it is public" is
+                // the one thing the record does not support here, and saying it on
+                // an absence of information is what this row must never do.
+                KeyState::CannotTell(_) => format!(
+                    "{}; the store could not be asked, so whether it is public is not known",
+                    wallpaper(count)
+                ),
+                KeyState::NotOurs => format!(
+                    "{}; the config file names a key this window does not manage, so whether it \
+                     is public is not known",
+                    wallpaper(count)
+                ),
             },
         };
         // A source that reads with nothing in it is not one whirl will ever
@@ -2793,6 +2808,16 @@ mod tests {
   "sources": [{"id": "pictures", "kind": "local", "paths": ["/tmp/walls"]}]
 }"#;
 
+    /// A file whose collection names a key the window does not manage. The
+    /// daemon resolves any label and may have used it, so whether the collection
+    /// is public is not this window's to say.
+    const NOT_OURS: &str = r#"{
+  "config_schema": 1,
+  "sources": [
+    {"id": "space", "kind": "wallhaven", "api_key_ref": "keychain:someone-elses"}
+  ]
+}"#;
+
     /// A `source:` record as the daemon sends one, in the two shapes 2.6 has: a
     /// source it could check (the counter group and `reason=-`) and one it could
     /// not (`enabled=0` with the reason and no group).
@@ -2937,6 +2962,44 @@ mod tests {
         assert_eq!(
             words,
             "whirl can read this collection, and it holds 97 wallpapers with the saved key"
+        );
+    }
+
+    #[test]
+    fn a_collection_whose_key_state_could_not_be_read_is_not_called_public() {
+        // The store errored, so whether a key is saved is unknown. The row's own
+        // line says the window cannot tell; the state line above it must not tell.
+        let store = Double(Err("the store could not be asked".to_string()));
+        let words = state_of(
+            "cannot-tell",
+            TWO,
+            vec![record("space", "wallhaven", 97, None)],
+            "space",
+            &store,
+        );
+        assert_eq!(
+            words,
+            "whirl can read this collection, and it holds 97 wallpapers; the store could not be \
+             asked, so whether it is public is not known"
+        );
+    }
+
+    #[test]
+    fn a_collection_whose_key_is_not_this_windows_is_not_called_public() {
+        // The daemon resolves any label and reads `WHIRL_WALLHAVEN_API_KEY` first,
+        // so a private collection can answer with a key this window does not know
+        // about: an absence of information here is not "public".
+        let words = state_of(
+            "not-ours",
+            NOT_OURS,
+            vec![record("space", "wallhaven", 97, None)],
+            "space",
+            &no_key(),
+        );
+        assert_eq!(
+            words,
+            "whirl can read this collection, and it holds 97 wallpapers; the config file names a \
+             key this window does not manage, so whether it is public is not known"
         );
     }
 
