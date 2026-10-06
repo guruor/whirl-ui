@@ -45,12 +45,18 @@ fn scratch(tag: &str) -> (PathBuf, PathBuf) {
 }
 
 /// Run the source mode with a socket path that has nothing behind it.
+///
+/// `WHIRL_UI_KEYCHAIN` names no store, so the app this spawns asks no keychain
+/// however the config it reads is shaped. The binary the tests run is built
+/// without `cfg(test)`, so its build's default store is the real one, and this is
+/// where the harness says otherwise.
 fn source(config: &Path, socket: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
         .arg("--source")
         .args(args)
         .env("WHIRL_CONFIG", config)
         .env("WHIRL_SOCKET", socket)
+        .env("WHIRL_UI_KEYCHAIN", "none")
         .output()
         .expect("the app runs")
 }

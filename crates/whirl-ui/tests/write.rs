@@ -38,11 +38,17 @@ fn scratch(tag: &str) -> (PathBuf, PathBuf) {
 }
 
 /// Run the app's write mode with a socket path that has nothing behind it.
+///
+/// `WHIRL_UI_KEYCHAIN` names no store, so the app this spawns asks no keychain
+/// whatever the config it reads names. The binary the tests run is built without
+/// `cfg(test)`, so its build's default store is the real one, and this is where
+/// the harness says otherwise.
 fn set_rotation(config: &Path, socket: &Path, value: &str, unit: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
         .args(["--set-rotation", value, unit])
         .env("WHIRL_CONFIG", config)
         .env("WHIRL_SOCKET", socket)
+        .env("WHIRL_UI_KEYCHAIN", "none")
         .output()
         .expect("the app runs")
 }

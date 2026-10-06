@@ -30,9 +30,22 @@ mod support;
 #[cfg(unix)]
 use support::{Stub, app};
 
+/// The app binary, with the store gate already set.
+///
+/// The binary this spawns is built without `cfg(test)`, so its build's default
+/// store is the machine's own keychain; naming no store here is how the harness
+/// keeps a test out of it. Every spawn in this file that does not drive the
+/// stand-in goes through this helper, so a test added later cannot reach the
+/// keychain by forgetting to opt out.
+fn app_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_whirl-ui"));
+    command.env("WHIRL_UI_KEYCHAIN", "none");
+    command
+}
+
 /// The app, run with the socket and config file this test names.
 fn run_with(socket: &Path, config: &Path, mode: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+    app_command()
         .env("WHIRL_SOCKET", socket)
         .env("WHIRL_CONFIG", config)
         .arg(mode)
@@ -45,12 +58,11 @@ fn run_with(socket: &Path, config: &Path, mode: &str) -> std::process::Output {
 /// The live test must not point the app's own client anywhere else: the daemon it
 /// talks to is whatever `WHIRL_SOCKET` names for this test too, and a socket
 /// override here would make the app report a daemon that this test can reach as
-/// unreachable.
+/// unreachable. The store is the one thing the harness does point elsewhere: the
+/// live config can name a Wallhaven source, and this run is not the place to ask
+/// the machine's own keychain about it.
 fn run_inherited(mode: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
-        .arg(mode)
-        .output()
-        .expect("the app runs")
+    app_command().arg(mode).output().expect("the app runs")
 }
 
 /// A directory that holds no socket and no config, named for the test that asked
@@ -366,10 +378,7 @@ fn each_dump_mode_prints_the_daemons_own_lines() {
         ("--dump-sources", "count: "),
         ("--dump-config-check", "plan: "),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
-            .arg(mode)
-            .output()
-            .expect("the app runs");
+        let output = app_command().arg(mode).output().expect("the app runs");
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -390,7 +399,7 @@ fn a_screenshot_state_the_window_does_not_have_is_a_command_line_error() {
     // states is refused without a display and without a file.
     let directory = scratch("snap-state");
     let path = directory.join("never-written.png");
-    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+    let output = app_command()
         .arg("--screenshot")
         .arg(&path)
         .arg("sideways")
@@ -405,7 +414,7 @@ fn a_screenshot_state_the_window_does_not_have_is_a_command_line_error() {
     assert!(!path.exists(), "no window ran, so no file was written");
 
     // And a screenshot with no path at all is the same kind of error.
-    let missing_path = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+    let missing_path = app_command()
         .arg("--screenshot")
         .output()
         .expect("the app runs");
@@ -422,7 +431,7 @@ fn the_update_check_that_could_not_be_made_says_so() {
     // The check is one request, so a machine that cannot make it gets the reason
     // and an exit code that is not success. A proxy that does not resolve is
     // that machine, and it costs no network: `.invalid` is reserved.
-    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+    let output = app_command()
         .env("https_proxy", "http://no-such-host.invalid:9")
         .env("HTTPS_PROXY", "http://no-such-host.invalid:9")
         .arg("--check-update")
@@ -444,7 +453,7 @@ fn the_update_check_that_could_not_be_made_says_so() {
 fn the_update_check_takes_no_arguments() {
     // The check is a mode of its own, not a verb with a subject: there is nothing
     // to point it at, and nothing to configure.
-    let output = Command::new(env!("CARGO_BIN_EXE_whirl-ui"))
+    let output = app_command()
         .arg("--check-update")
         .arg("--now")
         .output()
