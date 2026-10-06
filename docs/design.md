@@ -97,10 +97,12 @@ theme; it is not a starting point to be improved on.
 The palette is the contract; the window applying it is what this document is held to. The window is
 the reference's own shape: a sidebar carrying the mark, the wordmark, one row per pane and the status
 footer, and a centre panel carrying the pane's title and the pane itself
-(`crates/whirl-ui/src/app.rs`). Its content is three panes of choices and state (where the wallpapers
-come from, how often they change, and whether whirl answered) plus an About pane, which says what the
-app is, which build is running, where its source is, whether the daemon is connected and whether a
-newer release is published, in `crates/whirl-ui/src/settings.rs` and `crates/whirl-ui/src/about.rs`.
+(`crates/whirl-ui/src/app.rs`). Its content is five panes: Sources and Rotation (where the wallpapers
+come from and how often they change), Background Helper (the part that keeps running after the window
+closes, with its `Launch at login` switch, the `Start now` step a stopped unit offers, its paths and its
+removal), Control Panel (this window's own login row), and About, which says what the app is, which
+build is running, where its source is and whether a newer release is published, in
+`crates/whirl-ui/src/settings.rs` and `crates/whirl-ui/src/about.rs`.
 
 The About pane is the window's first element that is not a control over the daemon's state, and the one
 thing that would have made it dishonest is a version string typed into a source file. It is read from
@@ -145,7 +147,7 @@ open.
 | **Pause while presenting or gaming** | **daemon feature: presentation/game detection**. Nothing in the daemon watches fullscreen or presentation state, and the config has no key it could read. Pause itself already exists (`pause` / `resume`, `docs/architecture.md` 2.5): what is missing is the trigger, not the action. | The trigger is the whole cost, and it is a state no protocol verb reports. Not yet. | none until the trigger exists; a key would only configure a detector |
 | **Appearance pane** | **not needed**. The config has no appearance key and the app is dark only, so a pane here would invent a setting rather than surface one. | Leave it out until there is a light theme, and let the theme come first. | none |
 | **Network pane** | **not needed**. There is no network key in the config. The app's own one request, the About pane's release check, is a button rather than a setting: it reads nothing from a key and writes nothing, so a pane here would still be drawing a daemon setting that does not exist. | Not this app's surface, and the release check is deliberately not a configurable one. | none |
-| **Advanced pane** | **not needed**. The file-only knobs that exist (`log_level`, `backend`, `cache.*`, `filters.*`, `crates/whirl-core/src/config.rs`) are governed by the window's own rule, that nothing which can only be set in the file is on screen (`crates/whirl-ui/src/settings.rs`). An Advanced pane is a change to that rule, not a missing key. | Leaving it out is a decision worth keeping. | none |
+| **Advanced pane** | **not needed**. The file-only knobs that exist (`log_level`, `backend`, `cache.*`, `filters.*`, `crates/whirl-core/src/config.rs`) are governed by the window's own rule, that nothing which can only be set in the file is on screen (`crates/whirl-ui/src/settings.rs`). An Advanced pane is a change to that rule, not a missing key. The Background Helper pane's collapsed `Advanced` group is not that pane: it names the three commands the pane asks for and where the unit lives, and shows no key. | Leaving it out is a decision worth keeping. | none |
 
 ### Already possible from the protocol
 

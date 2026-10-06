@@ -15,12 +15,20 @@
 //! The daemon is not built or started here. `whirl-ui` must never start one
 //! (whirl's docs/architecture.md section 8, "must never"), and neither does this
 //! suite: the live-daemon test talks to whatever `WHIRL_SOCKET` and `WHIRL_CONFIG`
-//! name and skips, loudly, when nothing answers.
+//! name and skips, loudly, when nothing answers. The Background Helper pane's
+//! switch is the one part that needs a daemon's answer and no daemon, so it is
+//! asserted against the stand-in in `support`, giving it each of the three codes
+//! `whirl daemon status` writes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use whirlui_client::Client;
+
+#[cfg(unix)]
+mod support;
+#[cfg(unix)]
+use support::{Stub, app};
 
 /// The app, run with the socket and config file this test names.
 fn run_with(socket: &Path, config: &Path, mode: &str) -> std::process::Output {
@@ -126,8 +134,9 @@ fn with_no_daemon_the_window_shows_the_reason_and_still_offers_its_controls() {
         stdout.contains("https://github.com/guruor/whirl-ui"),
         "{stdout}"
     );
-    assert!(stdout.contains("the daemon: not connected"), "{stdout}");
     assert!(stdout.contains("Check for a newer release"), "{stdout}");
+    // The one removal row, and it says what it cannot do.
+    assert!(stdout.contains("Remove Whirl completely"), "{stdout}");
     let about = stdout.split("About\n").nth(1).expect("the About block");
     // The About block names no path on this machine: a version, a URL, and the
     // daemon in a word.
@@ -196,6 +205,70 @@ fn with_no_daemon_the_window_shows_the_reason_and_still_offers_its_controls() {
 }
 
 #[test]
+fn the_window_shows_the_five_panes_and_the_two_switches() {
+    let directory = scratch("panes");
+    let socket = directory.join("whirl.sock");
+    let config = directory.join("config.json");
+    let output = run_with(&socket, &config, "--dump-settings");
+    let stdout = stdout_of(&output);
+
+    // The five panes, in the order the sidebar lists them.
+    let mut at = 0;
+    for title in [
+        "Wallpapers come from",
+        "How often they change",
+        "Background Helper",
+        "Control Panel",
+        "About",
+    ] {
+        let found = stdout[at..]
+            .find(title)
+            .unwrap_or_else(|| panic!("{title} is not on screen:\n{stdout}"));
+        at += found + title.len();
+    }
+
+    // The two switches are the two login flags and nothing else: the Background
+    // Helper's unit, and this window's own login item. Each row is drawn once,
+    // with a switch token on it, and neither row is a command.
+    assert_eq!(stdout.matches("Launch at login").count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("Open Whirl at login").count(), 1, "{stdout}");
+    for label in ["Launch at login", "Open Whirl at login"] {
+        let row = stdout
+            .lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("{label} is not on screen:\n{stdout}"));
+        assert!(
+            row.starts_with("  [x] ") || row.starts_with("  [ ] ") || row.starts_with("  [-] "),
+            "{row}"
+        );
+    }
+
+    // There is no control for the menu bar icon anywhere, because the icon shows
+    // exactly while this window runs: the login flags are the only switch, so a
+    // second control would say the same thing twice.
+    for gone in [
+        "menu bar",
+        "Menu bar",
+        "tray icon",
+        "Show icon",
+        "Hide icon",
+    ] {
+        assert!(!stdout.contains(gone), "{gone} in:\n{stdout}");
+    }
+    // And nothing on screen names a login flag, a store, or the API behind the
+    // app's own login item: the flags are the switch, in the app's own words.
+    for key in [
+        "launch_at_login",
+        "open_at_login",
+        "login_item",
+        "SMAppService",
+        "LaunchAgent",
+    ] {
+        assert!(!stdout.contains(key), "{key} in:\n{stdout}");
+    }
+}
+
+#[test]
 fn with_a_daemon_the_window_shows_what_the_daemon_and_the_file_report() {
     let Ok(client) = Client::connect() else {
         eprintln!("skipping: no daemon is reachable; point WHIRL_SOCKET and WHIRL_CONFIG at one");
@@ -217,18 +290,18 @@ fn with_a_daemon_the_window_shows_what_the_daemon_and_the_file_report() {
     let stdout = stdout_of(&output);
     assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
 
-    // The daemon's line, and the note that says where a change actually lands.
+    // The window's line, and the note that says where a change actually lands.
     assert!(stdout.contains("whirl is running"), "{stdout}");
     assert!(
-        stdout.contains("whirl picks them up the next time it reads it"),
+        stdout.contains("used when whirl next reads the file"),
         "{stdout}"
     );
 
-    // The About block carries the daemon's own version and says it is connected,
-    // so one pane answers which daemon this build is talking to, in the daemon's
-    // own words rather than in this window's.
+    // The Background Helper pane carries Whirl's own version, so one pane answers
+    // which build this window is talking to, in Whirl's words rather than in this
+    // window's.
     assert!(
-        stdout.contains(&format!("the daemon: {daemon_version}, connected")),
+        stdout.contains(&format!("the Background Helper is {daemon_version}")),
         "{stdout}"
     );
 
@@ -381,5 +454,59 @@ fn the_update_check_takes_no_arguments() {
         stderr_of(&output).contains("--check-update takes no arguments"),
         "{}",
         stderr_of(&output)
+    );
+}
+
+/// The Background Helper pane's switch is the state `whirl daemon status`
+/// reported, and nothing else.
+///
+/// `--dump-settings` calls the same `read_helper` the pane calls when it is
+/// shown, and with the stand-in on `PATH` the switch's position is the stand-in's
+/// own answer. The three codes are the daemon's status contract, and the middle
+/// one is the only state that offers a step beside it. The call log is the
+/// evidence that the read is `whirl daemon status` and nothing else, which is
+/// what makes the switch a state rather than a command.
+#[cfg(unix)]
+#[test]
+fn the_switch_is_the_state_whirls_own_status_reports() {
+    let stub = Stub::new("window-switch");
+    stub.warm();
+
+    let dump = |env: &[(&str, &str)]| stdout_of(&app(&stub, env, &["--dump-settings"]));
+
+    // Exit 0, running: on, and there is nothing to start.
+    let running = dump(&[]);
+    assert!(running.contains("[x] Launch at login"), "{running}");
+    assert!(running.contains("it is running now"), "{running}");
+    assert!(!running.contains("[Start now]"), "{running}");
+
+    // Exit 1, loaded and stopped: on, with the one step out of it beside the
+    // status line, because a stopped unit is not a state a switch can show.
+    let stopped = dump(&[
+        ("WHIRL_STUB_STATUS_CODE", "1"),
+        (
+            "WHIRL_STUB_STATUS_WORDS",
+            "status: com.guruor.whirl loaded, not running",
+        ),
+    ]);
+    assert!(stopped.contains("[x] Launch at login"), "{stopped}");
+    assert!(stopped.contains("it is loaded and stopped"), "{stopped}");
+    assert!(stopped.contains("[Start now]"), "{stopped}");
+
+    // Exit 2, no job: off, and nothing to start.
+    let absent = dump(&[
+        ("WHIRL_STUB_STATUS_CODE", "2"),
+        ("WHIRL_STUB_STATUS_WORDS", "no job for com.guruor.whirl"),
+    ]);
+    assert!(absent.contains("[ ] Launch at login"), "{absent}");
+    assert!(absent.contains("it is not installed"), "{absent}");
+    assert!(!absent.contains("[Start now]"), "{absent}");
+
+    // One read per window, of the daemon's own command, and no verb that would
+    // change anything: nothing here writes a unit or starts a job.
+    assert_eq!(
+        stub.calls(),
+        vec!["daemon status", "daemon status", "daemon status"],
+        "the pane asked for something other than the state"
     );
 }

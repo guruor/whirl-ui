@@ -1,6 +1,7 @@
-//! The settings window's content: two things a person sets, in their own words.
+//! The settings window's content: what a person sets, in their own words.
 //!
-//! The window shows exactly two choices and one line of state:
+//! The window is five panes ([`Pane`]), and each one says in its first line what
+//! it is for:
 //!
 //! - **where the wallpapers come from** ([`Sources`]): one row per source, a
 //!   folder of the person's own pictures or Wallhaven's remote collection,
@@ -9,29 +10,36 @@
 //!   first and stays editable afterwards ([`CollectionField`], [`Row::line`]);
 //! - **how often they change** ([`Interval`]): a number and a unit, never the
 //!   raw interval the file stores and never a key name;
-//! - **whether whirl answered, and whether it is paused** ([`Daemon`]), one
-//!   line, so nothing on screen reads as live while nothing is listening and a
-//!   paused daemon never reads as a running one.
+//! - **the Background Helper** ([`Helper`]): the part of Whirl that keeps
+//!   running after this window closes. Its one switch is a state read from
+//!   Whirl's own `status` ([`crate::daemon_cli`]), never a command, and the pane
+//!   reads it when it is shown and when the window is focused;
+//! - **the Control Panel** ([`Login`]): this window's own login item, through
+//!   [`crate::login_item`], and nothing else;
+//! - **About** ([`about`]): this build, its source, a newer release, and the two
+//!   removals.
 //!
-//! What the window reads and writes is the config file, and the daemon's own
-//! parser judges every write (`crate::config_file`), so a value this window
-//! lands is one the daemon would have accepted. The daemon is told nothing: no
-//! part of a change is a verb, and the window has no way to send one.
+//! What the window reads and writes is the config file, and Whirl's own parser
+//! judges every write (`crate::config_file`), so a value this window lands is
+//! one Whirl would have accepted. Nothing about a settings change is a verb, and
+//! the only thing this window asks of Whirl itself is the Background Helper's
+//! lifecycle, through Whirl's own command: no process of the app's own is
+//! started, and a refusal is shown rather than worked around.
 //!
 //! Four rules shape the words on screen, and each one is a value a test can
 //! read rather than a claim:
 //!
 //! - **A person never sees a key name.** The file's own spelling stays in the
-//!   file, in [`crate::config_file`] and in the daemon's answers; what the
-//!   window draws is [`Row::line`] and [`Interval::phrase`]. The one exception
-//!   is a refusal the daemon itself wrote: [`Outcome::line`] quotes it as the
-//!   reason, and its reason sentence names the config key the parser found
-//!   wrong. Quoting the daemon verbatim is the point of that line; the window's
-//!   own words around it name no key.
+//!   file, in [`crate::config_file`] and in Whirl's answers; what the window
+//!   draws is [`Row::line`] and [`Interval::phrase`]. The one exception is a
+//!   refusal Whirl itself wrote: [`Outcome::line`] quotes it as the reason, and
+//!   its reason sentence names the config key the parser found wrong. Quoting
+//!   Whirl verbatim is the point of that line; the window's own words around it
+//!   name no key.
 //! - **Nothing that can only be set in the file is on screen.** The window shows
-//!   the two things a person asked for and no dump of the rest of the file.
+//!   what a person asked for and no dump of the rest of the file.
 //! - **An edit says when it applies.** Every saved edit says the change is in
-//!   the file and that the wallpaper on screen has not moved, because the daemon
+//!   the file and that the wallpaper on screen has not moved, because Whirl
 //!   reads the file on its own schedule and nothing here can tell the window
 //!   that it has.
 //! - **The token is never shown.** It lives in [`KeyField::token`] only between a
@@ -45,7 +53,9 @@ use whirlui_client::protocol::parse_plan_record;
 
 use crate::about;
 use crate::config_file::{self, FileSource, INTERVAL_KEY, Target};
+use crate::daemon_cli;
 use crate::keychain;
+use crate::login_item;
 
 /// The window's title, and the app name eframe registers.
 pub const WINDOW_TITLE: &str = "whirl settings";
@@ -54,12 +64,18 @@ pub const WINDOW_TITLE: &str = "whirl settings";
 /// reader can check.
 pub const WINDOW_SIZE: [f32; 2] = [860.0, 620.0];
 
-/// Which of the window's four panes is on screen.
+/// Which of the window's five panes is on screen.
 ///
 /// The window draws one pane at a time, and this is which: the sidebar's rows
 /// move it, and a screenshot names it on the command line. It is a
 /// build-time-only grouping of what the window says: each pane is one block
 /// [`Settings::to_text`] prints, so no new pane is added by naming them.
+///
+/// Two of the five are about a login: the **Background Helper** is the part of
+/// Whirl that keeps running after the window closes, and the **Control Panel**
+/// is this window. Each carries its own login row and neither can be mistaken
+/// for the other, which is why the names are the words a person reads rather
+/// than the machinery's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pane {
     /// Where the wallpapers come from.
@@ -67,22 +83,31 @@ pub enum Pane {
     Sources,
     /// How often they change.
     Rotation,
-    /// Whether whirl answered, and what the window writes.
-    App,
+    /// The part of Whirl that keeps running after the Control Panel closes.
+    BackgroundHelper,
+    /// This window: the settings it writes and the login row of its own.
+    ControlPanel,
     /// What this app is, which build, where its source is, and a newer release.
     About,
 }
 
 impl Pane {
     /// Every pane, in the order the sidebar shows them.
-    pub const ALL: [Pane; 4] = [Pane::Sources, Pane::Rotation, Pane::App, Pane::About];
+    pub const ALL: [Pane; 5] = [
+        Pane::Sources,
+        Pane::Rotation,
+        Pane::BackgroundHelper,
+        Pane::ControlPanel,
+        Pane::About,
+    ];
 
     /// The pane's name on a control, and the word `--screenshot` takes.
     pub fn name(self) -> &'static str {
         match self {
             Pane::Sources => "Sources",
             Pane::Rotation => "Rotation",
-            Pane::App => "App",
+            Pane::BackgroundHelper => "Background Helper",
+            Pane::ControlPanel => "Control Panel",
             Pane::About => "About",
         }
     }
@@ -124,36 +149,151 @@ pub const COLLECTION_LINE: &str = "paste the collection's address: https://wallh
 /// The collection field's second line: when a key is needed, and when it is not.
 pub const COLLECTION_TOKEN_NOTE: &str = "a public collection needs no key; a private one, or one of your own account's, needs a key, which you can add once this is saved";
 
-/// The line under the daemon's: where a change is actually written.
+/// What the two switches say before anything has been read from them.
 ///
-/// The window edits the config file and never the running daemon, and a person
-/// who expects the wallpaper to change the moment they press Save deserves the
-/// one sentence that says it will not until whirl reads the file again.
-pub const APP_DAEMON_NOTE: &str =
-    "changes are written to the config file; whirl picks them up the next time it reads it";
+/// It claims no position: the pane reads when it is shown, so this is on screen
+/// only for the instant between the pane opening and the read landing, and a
+/// switch that guessed in that instant would be the one thing the read exists to
+/// prevent.
+pub const UNREAD: &str = "nothing has been read yet";
 
-/// The window's own control for a daemon that is not answering, beside the
-/// daemon line in the App pane. The same request as the menu's `Start whirl`
-/// row: it is a control, not an interruption.
-pub const START_LABEL: &str = "Start whirl";
+/// The Background Helper section's heading.
+///
+/// It is also the pane's name in the sidebar: the pane's job is to say what
+/// this one part of Whirl is, so the heading is its name and nothing cleverer.
+pub const HELPER_TITLE: &str = "Background Helper";
+
+/// The Background Helper pane's own line: what it is, in the words a person
+/// reads rather than the words the machinery uses.
+///
+/// The two names a login can belong to are this pane's whole reason to exist,
+/// so the line separates them once, here, and every control below can then say
+/// `the Background Helper` without explaining itself again.
+pub const HELPER_LINE: &str = "This is the part of Whirl that keeps running after you close the Control Panel. It changes your wallpaper on its own, on the schedule you set under Rotation.";
+
+/// The Background Helper's one control: whether it comes back at login.
+///
+/// A state, not a command: it is drawn from what `whirl daemon status` says and
+/// never from what the last click asked for.
+pub const LAUNCH_TITLE: &str = "Launch at login";
 
 /// What the control does, in the app's own words.
+pub const LAUNCH_LINE: &str = "starts the Background Helper when you log in, so your wallpaper keeps changing even when the Control Panel is closed";
+
+/// The middle state's one action, beside the status line and only there: the
+/// unit is loaded and stopped, which is not a state a switch can show.
+pub const START_NOW: &str = "Start now";
+
+/// The state that could not be read has one action beside it, and this is it:
+/// a re-read is the only thing that changes an unread state.
+pub const CHECK_AGAIN: &str = "Check again";
+
+/// The Background Helper's removal, behind a confirmation.
 ///
-/// The route is worth one sentence because it is the whole of the permission the
-/// daemon's contract gives the app: the app asks the daemon's own command, and
-/// that command asks the OS supervisor. No process of the app's own is started,
-/// and a daemon that refuses is shown rather than worked around.
-pub const START_LINE: &str = "asks the daemon's own command, `whirl daemon start`, to start it through the OS supervisor; the app starts no process of its own";
+/// It is a removal of the login unit, not of the app, and the words say which.
+pub const REMOVE_HELPER: &str = "Remove the Background Helper";
+
+/// The confirmation, and the one thing a person should know before it runs.
+pub const CONFIRM_REMOVE_HELPER: &str =
+    "Remove the Background Helper? Your wallpaper stops changing until you install it again.";
+
+/// The Paths group's heading: a collapsed group, because a path is looked up
+/// and not read.
+pub const PATHS_TITLE: &str = "Paths";
+
+/// The rows the Paths group holds, in the order they are shown.
+///
+/// They are the install's own paths, named the way `install.sh` names them, and
+/// `~` is written rather than a home directory so no screenshot carries one.
+pub const PATH_ROWS: [&str; 5] = [
+    "the unit: ~/Library/LaunchAgents/com.guruor.whirl.plist",
+    "the binary: ~/.local/bin/whirld",
+    "the log: ~/Library/Logs/whirl/whirl.log",
+    "the config: ~/Library/Application Support/whirl/config.json",
+    "the control socket: ~/Library/Application Support/whirl/whirl.sock",
+];
+
+/// The button that opens the Login Items pane in System Settings.
+///
+/// The one thing macOS asks a person to finish by hand, so the app offers the
+/// door rather than describing the room.
+pub const LOGIN_ITEMS: &str = "Open Login Items";
+
+/// The Advanced group's heading.
+///
+/// This is the one place the machinery is named: the two panes above say what
+/// a person controls, and this says what the app asks for under it.
+pub const ADVANCED_TITLE: &str = "Advanced";
+
+/// What the Advanced group says: the three commands the pane asks for, where
+/// the unit lives, and the one sentence about when a change takes effect.
+pub const ADVANCED_LINES: [&str; 5] = [
+    "this pane asks Whirl for three things, through Whirl's own command, never by starting a process of its own:",
+    "  whirl daemon install    writes the login unit and loads it",
+    "  whirl daemon uninstall  stops it and removes the unit",
+    "  whirl daemon status     asks what the system says about it",
+    "the unit is the login agent at ~/Library/LaunchAgents/com.guruor.whirl.plist; changes are written to the config file, and whirl picks them up the next time it reads it",
+];
+
+/// The Control Panel section's heading, and its pane's name.
+pub const CONTROL_PANEL_TITLE: &str = "Control Panel";
+
+/// The Control Panel pane's own line: what this window is, and what it is not.
+///
+/// The second sentence is the one a person needs before they decide anything:
+/// this window is not the thing that changes their wallpaper.
+pub const CONTROL_PANEL_LINE: &str = "This is where you set Whirl up. It writes your settings and shows you what the Background Helper is doing. On its own it changes nothing.";
+
+/// The Control Panel's own login row: this app, at login, rather than the part
+/// that changes the wallpaper.
+pub const OPEN_AT_LOGIN: &str = "Open Whirl at login";
+
+/// What the row does, in the app's own words, and how it differs from the
+/// Background Helper's row.
+///
+/// The last sentence is the trade-off the product owner asked to be said in plain
+/// words: closing this window does not stop the wallpaper changing, so the window
+/// being open is not the thing a person has to keep.
+pub const OPEN_AT_LOGIN_LINE: &str = "opens the Control Panel when you log in; the Background Helper is what changes the wallpaper, and it has its own setting. Leaving the Control Panel closed costs almost nothing: the Background Helper keeps your wallpaper changing on its own";
 
 /// The About section's heading.
 pub const ABOUT_TITLE: &str = "About";
 
 /// What this app is, in the product's own words.
 ///
-/// The last clause is the amended frontend contract: the app never spawns a
-/// daemon of its own, and the one way it takes part in the daemon's lifecycle is
-/// by asking the daemon's own command, which asks the OS supervisor.
-pub const ABOUT_LINE: &str = "whirl-ui is a lightweight tray frontend for the whirl wallpaper daemon: it reads the daemon's status and edits the config file, and it takes part in the daemon's lifecycle only by asking the daemon's own command, never by spawning a daemon of its own";
+/// The last clause is the amended frontend contract: the app never starts a
+/// process of its own, and the one way it takes part in Whirl's lifecycle is by
+/// asking Whirl's own command, which asks the OS supervisor.
+pub const ABOUT_LINE: &str = "whirl-ui is a lightweight tray frontend for Whirl: it edits your settings, shows you what the Background Helper is doing, and takes part in the Background Helper's lifecycle only by asking Whirl's own command, never by starting one of its own";
+
+/// The About pane's one removal row.
+///
+/// It runs the Background Helper's removal and says plainly what it cannot do:
+/// the app bundle is removed from the command line, by the documented command.
+pub const REMOVE_WHIRL: &str = "Remove Whirl completely";
+
+/// What the row does, and the one thing it cannot do itself.
+///
+/// The first sentence is the same on every platform: the Background Helper's
+/// removal is what this app can do, and the app itself is removed by hand
+/// because writing into the installed location is an authorization this app
+/// cannot ask for. A platform that has its own route adds one sentence, below.
+pub const REMOVE_WHIRL_LINE: &str = "removes the Background Helper and forgets this app's install record; the app itself is removed by hand, because removing what is in the installed location is a permission this window cannot ask for";
+
+/// The one extra sentence a platform may add: its own route for removing the app.
+///
+/// At most one sentence, and only where the platform has one; the sentence above
+/// stays as it is either way.
+#[cfg(target_os = "macos")]
+pub const REMOVE_WHIRL_ROUTE: Option<&str> =
+    Some("on macOS, drag Whirl from /Applications to the Trash");
+
+/// No route of this kind on a platform with no installed location.
+#[cfg(not(target_os = "macos"))]
+pub const REMOVE_WHIRL_ROUTE: Option<&str> = None;
+
+/// The confirmation the About pane's removal row asks for first.
+pub const CONFIRM_REMOVE_WHIRL: &str = "Remove Whirl completely? Your wallpaper stops changing, and the Background Helper goes with it.";
 
 /// The heading over the release check.
 pub const CHECK_TITLE: &str = "Is there a newer one?";
@@ -179,13 +319,13 @@ const WALLHAVEN: &str = "wallhaven";
 /// The most sub-folders the chooser lists at once.
 const CHILD_LIMIT: usize = 200;
 
-/// The window: where the wallpapers come from, how often they change, and the
-/// config file both are written to.
+/// The window: where the wallpapers come from, how often they change, the one
+/// login the app can ask for, and the settings both are written to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// The config file an edit writes, when one could be located.
     pub target: Option<Target>,
-    /// Which of the four panes is on screen.
+    /// Which of the five panes is on screen.
     pub pane: Pane,
     /// Whether whirl answered, and whether its schedule is suspended.
     pub daemon: Daemon,
@@ -194,10 +334,34 @@ pub struct Settings {
     pub bundle_version: Option<String>,
     /// The daemon's own version, when it answered the `version` request.
     pub daemon_version: Option<String>,
-    /// The daemon's own words about the last `Start whirl` this window asked
-    /// for, kept so the pane can show a refusal beside the line it belongs to.
-    /// `None` until the control is pressed.
-    pub daemon_action: Option<String>,
+    /// The Background Helper's own state, as `whirl daemon status` answered it.
+    ///
+    /// `None` until a read has happened: the pane reads when it opens and when
+    /// the window is focused, and a state that was not read is never shown as
+    /// one. It is a state and not a command, so it is never set by a click.
+    pub helper: Option<Helper>,
+    /// Whirl's own words about the last install, start or uninstall this pane
+    /// asked for, kept so the pane can show a refusal beside the row it belongs
+    /// to. `None` until one of the controls is pressed.
+    pub helper_action: Option<String>,
+    /// The app's own login item, as macOS reports it. `None` until read, and
+    /// read with the same rule as [`Settings::helper`].
+    pub login: Option<Login>,
+    /// macOS's own words about the last registration or removal, if one was
+    /// asked for.
+    pub login_action: Option<String>,
+    /// Whirl's own words about the last `Remove Whirl completely`, kept so the
+    /// About pane can show a refusal under the row that caused it.
+    pub remove_action: Option<String>,
+    /// Whether the Paths group is open. A path is looked up rather than read, so
+    /// the group starts closed.
+    pub paths_open: bool,
+    /// Whether the Advanced group is open. It holds the machinery's own names,
+    /// so it too starts closed.
+    pub advanced_open: bool,
+    /// The removal whose confirmation is on screen, when one is. A removal runs
+    /// on the second press and never on the first.
+    pub confirming: Option<Removal>,
     /// The last release check, and what it found. `None` until the button is
     /// pressed: the app never checks on its own.
     pub check: Option<about::Check>,
@@ -211,6 +375,137 @@ pub struct Settings {
     pub key: KeyField,
     /// The Wallhaven collection field, while it is open.
     pub collection: CollectionField,
+}
+
+/// A removal this window asks a confirmation for before it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// `Remove the Background Helper`: the login unit, and nothing else.
+    Helper,
+    /// `Remove Whirl completely`: the login unit and this app's install record.
+    Whirl,
+}
+
+/// The Background Helper's state, as `whirl daemon status` last answered it.
+///
+/// The switch shows this value and nothing else. The three codes are the
+/// daemon's own status contract (docs/milestones.md:78): 0 running, 1 loaded and
+/// stopped, 2 no such job. A state this build did not read is not a state, which
+/// is why there is no default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Helper {
+    /// Exit 0: the supervisor has it running.
+    Running,
+    /// Exit 1: the unit is loaded and stopped. On, with [`START_NOW`] beside it,
+    /// because a stopped unit is not a state a switch can show.
+    Stopped,
+    /// Exit 2: there is no unit to have a state.
+    Absent,
+    /// Anything else: the switch is disabled and Whirl's own sentence is shown.
+    Unreadable(String),
+}
+
+impl Helper {
+    /// The state one `whirl daemon status` answer names.
+    ///
+    /// The three codes are read as the daemon's status contract defines them and
+    /// everything else is refused rather than guessed: a refusal shown beside the
+    /// switch is a fact, and a guessed state is not.
+    pub fn of(outcome: &daemon_cli::Outcome) -> Helper {
+        match outcome {
+            daemon_cli::Outcome::Done(..) => Helper::Running,
+            daemon_cli::Outcome::Refused(..) => Helper::Stopped,
+            daemon_cli::Outcome::Unreachable(..) => Helper::Absent,
+            other => Helper::Unreadable(other.words().to_string()),
+        }
+    }
+
+    /// Whether the switch is on. A state that could not be read has no position.
+    pub fn on(&self) -> bool {
+        matches!(self, Helper::Running | Helper::Stopped)
+    }
+
+    /// Whether the unit is loaded and stopped, so [`START_NOW`] belongs beside
+    /// the status line.
+    pub fn start_now(&self) -> bool {
+        matches!(self, Helper::Stopped)
+    }
+
+    /// Whether the switch can be moved at all.
+    pub fn readable(&self) -> bool {
+        !matches!(self, Helper::Unreadable(_))
+    }
+
+    /// The line beside the switch: what the state is in the app's own words, or
+    /// Whirl's own sentence when it answered with something this build does not
+    /// read as a state.
+    pub fn state_line(&self) -> Option<String> {
+        match self {
+            Helper::Running => Some("it is running now".to_string()),
+            Helper::Stopped => Some("it is loaded and stopped".to_string()),
+            Helper::Absent => Some("it is not installed".to_string()),
+            Helper::Unreadable(words) => Some(words.clone()),
+        }
+    }
+}
+
+/// The app's own login item, as macOS reports it.
+///
+/// It is the Control Panel's row and not the Background Helper's: the app's own
+/// bundle at login, which is a different record from the unit the switch above
+/// shows. `login_item.rs` is the whole of the mechanism, and this is only its
+/// answer read into the two positions a switch has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Login {
+    /// macOS reports the app is registered and will start at login.
+    On(String),
+    /// macOS reports the app is not registered, in its own words.
+    Off(String),
+    /// macOS could not be asked, or refused: the switch is disabled and the
+    /// reason is shown.
+    Unreadable(String),
+}
+
+impl Login {
+    /// The state one `login_item::status` answer names.
+    ///
+    /// The line is macOS's own sentence for the state and not the terminal's
+    /// `login item: <word> (status N):` record: the number is `--login-item
+    /// status`'s job, and a pane that is about what a person controls reads
+    /// better without it. The words come from [`login_item`] unchanged.
+    pub fn of(status: Result<login_item::Status, String>) -> Login {
+        match status {
+            Ok(status) => {
+                let words = status.state.means().to_string();
+                match status.state {
+                    login_item::State::Enabled | login_item::State::RequiresApproval => {
+                        Login::On(words)
+                    }
+                    login_item::State::NotRegistered | login_item::State::NotFound => {
+                        Login::Off(words)
+                    }
+                }
+            }
+            Err(reason) => Login::Unreadable(reason),
+        }
+    }
+
+    /// Whether the switch is on.
+    pub fn on(&self) -> bool {
+        matches!(self, Login::On(_))
+    }
+
+    /// Whether the switch can be moved at all.
+    pub fn readable(&self) -> bool {
+        !matches!(self, Login::Unreadable(_))
+    }
+
+    /// macOS's own words, for the line beside the switch.
+    pub fn line(&self) -> &str {
+        match self {
+            Login::On(words) | Login::Off(words) | Login::Unreadable(words) => words,
+        }
+    }
 }
 
 /// Whether whirl answered, as the one line the window carries about it.
@@ -777,7 +1072,17 @@ impl Settings {
             // The window opens with no check made: it is the button's job, and
             // nothing here reaches the network.
             check: None,
-            daemon_action: None,
+            // The two switches open unread. The Background Helper's pane reads
+            // `whirl daemon status` and macOS's login item when it is shown, so a
+            // state that was never read is never drawn as one.
+            helper: None,
+            helper_action: None,
+            login: None,
+            login_action: None,
+            remove_action: None,
+            paths_open: false,
+            advanced_open: false,
+            confirming: None,
             sources: Sources {
                 rows,
                 problem,
@@ -817,20 +1122,102 @@ impl Settings {
         }
     }
 
-    /// The daemon's version and whether it answered, as the About pane states
-    /// it: the version only when there is one, and the reason never here, since
-    /// the App pane already carries it. A paused daemon answered, so its line
-    /// says paused rather than connected, word for word with the App pane's.
-    pub fn daemon_line(&self) -> String {
-        match (&self.daemon, &self.daemon_version) {
-            (Daemon::Running, Some(version)) => format!("the daemon: {version}, connected"),
-            (Daemon::Running, None) => {
-                "the daemon: connected, and it reported no version".to_string()
-            }
-            (Daemon::Paused, Some(version)) => format!("the daemon: {version}, paused"),
-            (Daemon::Paused, None) => "the daemon: paused, and it reported no version".to_string(),
-            (Daemon::NotRunning(_), _) => "the daemon: not connected".to_string(),
+    /// The Background Helper's version, as its pane states it.
+    ///
+    /// The version only when one answered: the pane's switch already carries
+    /// whether it is running, so this line is a fact about the build rather than
+    /// a second opinion about the state.
+    pub fn helper_version_line(&self) -> String {
+        match &self.daemon_version {
+            Some(version) => format!("the Background Helper is {version}"),
+            None => "the Background Helper reported no version".to_string(),
         }
+    }
+
+    /// Read Whirl's own `status` and take the switch's position from it.
+    ///
+    /// This is the whole of the read, and it is never cached: the pane calls it
+    /// when it is shown and when the window is focused, because another client
+    /// can change the unit at any moment. The command is the same one the app has
+    /// always asked for its lifecycle, so nothing new is started.
+    pub fn read_helper(&mut self) {
+        self.helper = Some(Helper::of(&daemon_cli::run(daemon_cli::Verb::Status)));
+    }
+
+    /// Ask for the Background Helper to come back at login, or to stop.
+    ///
+    /// On is Whirl's own `install` and off is its `uninstall`, and the state is
+    /// re-read straight afterwards rather than assumed: a click that was refused
+    /// leaves the switch where the unit actually is.
+    pub fn set_launch(&mut self, on: bool) {
+        let verb = if on {
+            daemon_cli::Verb::Install
+        } else {
+            daemon_cli::Verb::Uninstall
+        };
+        let outcome = daemon_cli::run(verb);
+        self.helper_action = Some(outcome.words().to_string());
+        self.read_helper();
+    }
+
+    /// The middle state's one action: the unit is loaded and stopped, so nothing
+    /// on screen could start it except this.
+    pub fn start_now(&mut self) {
+        let outcome = daemon_cli::run(daemon_cli::Verb::Start);
+        self.helper_action = Some(outcome.words().to_string());
+        self.read_helper();
+    }
+
+    /// `Remove the Background Helper`, once the confirmation was given.
+    ///
+    /// It is the switch's own off and nothing else; the app bundle stays, and the
+    /// Control Panel pane says nothing about it because nothing about it changed.
+    pub fn remove_helper(&mut self) {
+        self.set_launch(false);
+    }
+
+    /// Read macOS's own login item for this app.
+    ///
+    /// Read with [`Settings::read_helper`]'s rule and for the same reason: the
+    /// Control Panel's switch is a state, and a state that was not read is not
+    /// shown as one. On a platform with no login item the read says so.
+    pub fn read_login(&mut self) {
+        self.login = Some(Login::of(login_item::status()));
+    }
+
+    /// Ask macOS to open the Control Panel at login, or to stop doing it.
+    ///
+    /// The mechanism is [`login_item`]'s and unchanged; this only records the
+    /// state afterwards, so the switch never claims a registration macOS refused.
+    pub fn set_login(&mut self, on: bool) {
+        let result = if on {
+            login_item::register()
+        } else {
+            login_item::unregister()
+        };
+        self.login_action = Some(match result {
+            Ok(()) => "macOS recorded the change".to_string(),
+            Err(reason) => reason,
+        });
+        self.read_login();
+    }
+
+    /// `Remove Whirl completely`, once the confirmation was given.
+    ///
+    /// The Background Helper's removal is the whole of what this app can do for
+    /// itself: the unit is stopped and removed, and this app's install record is
+    /// forgotten so nothing later looks for a binary that is gone. The app bundle
+    /// is not touched, because writing into the installed location is an
+    /// authorization this app cannot ask for, and the pane says so rather than
+    /// attempting it.
+    pub fn remove_whirl(&mut self) {
+        let removed = daemon_cli::run(daemon_cli::Verb::Uninstall);
+        let forgotten = daemon_cli::forget_receipt();
+        self.remove_action = Some(match forgotten {
+            Ok(()) => removed.words().to_string(),
+            Err(reason) => format!("{}; {reason}", removed.words()),
+        });
+        self.read_helper();
     }
 
     /// Run the release check, on demand, and record what it found.
@@ -1303,12 +1690,70 @@ impl Settings {
             out.push_str(&format!("  {now}\n"));
         }
 
+        // The window's own one line of state, drawn under every pane: whether
+        // Whirl answered, which is a fact about the socket rather than about any
+        // one pane's controls.
         out.push('\n');
         out.push_str(&self.daemon.line());
         out.push('\n');
-        out.push_str(APP_DAEMON_NOTE);
 
         out.push('\n');
+        out.push_str(HELPER_TITLE);
+        out.push('\n');
+        out.push_str(&format!("  {HELPER_LINE}\n"));
+        out.push_str(&format!(
+            "  {} {LAUNCH_TITLE}\n",
+            Settings::switch(self.launch_position())
+        ));
+        out.push_str(&format!("  {LAUNCH_LINE}\n"));
+        out.push_str(&format!("  {}\n", self.launch_state_line()));
+        if self.helper.as_ref().is_some_and(Helper::start_now) {
+            out.push_str(&format!("  [{START_NOW}]\n"));
+        }
+        if self.launch_position().is_none() {
+            out.push_str(&format!("  [{CHECK_AGAIN}]\n"));
+        }
+        if let Some(action) = &self.helper_action {
+            out.push_str(&format!("  {action}\n"));
+        }
+        out.push_str(&format!("  {}\n", self.helper_version_line()));
+        if self.paths_open {
+            for row in PATH_ROWS {
+                out.push_str(&format!("  {row}\n"));
+            }
+            out.push_str(&format!("  [{LOGIN_ITEMS}]\n"));
+        } else {
+            out.push_str(&format!("  [{PATHS_TITLE}]\n"));
+        }
+        if self.advanced_open {
+            for line in ADVANCED_LINES {
+                out.push_str(&format!("  {line}\n"));
+            }
+        } else {
+            out.push_str(&format!("  [{ADVANCED_TITLE}]\n"));
+        }
+        out.push_str(&format!("  [{REMOVE_HELPER}]\n"));
+        if self.confirming == Some(Removal::Helper) {
+            out.push_str(&format!("  {CONFIRM_REMOVE_HELPER}\n"));
+        }
+
+        out.push('\n');
+        out.push_str(CONTROL_PANEL_TITLE);
+        out.push('\n');
+        out.push_str(&format!("  {CONTROL_PANEL_LINE}\n"));
+        out.push_str(&format!(
+            "  {} {OPEN_AT_LOGIN}\n",
+            Settings::switch(self.login_position())
+        ));
+        out.push_str(&format!("  {OPEN_AT_LOGIN_LINE}\n"));
+        out.push_str(&format!("  {}\n", self.login_state_line()));
+        if self.login_position().is_none() {
+            out.push_str(&format!("  [{CHECK_AGAIN}]\n"));
+        }
+        if let Some(action) = &self.login_action {
+            out.push_str(&format!("  {action}\n"));
+        }
+
         out.push('\n');
         out.push_str(ABOUT_TITLE);
         out.push('\n');
@@ -1317,15 +1762,67 @@ impl Settings {
             out.push_str(&format!("  {line}\n"));
         }
         // The source is named as a sentence rather than as a `source:` record,
-        // so nothing here can be mistaken for one of the daemon's own lines.
+        // so nothing here can be mistaken for one of Whirl's own lines.
         out.push_str(&format!("  the source is {}\n", about::SOURCE_URL));
-        out.push_str(&format!("  {}\n", self.daemon_line()));
         out.push_str(&format!("  [{CHECK_LABEL}]\n"));
         out.push_str(&format!("  {CHECK_LINE}\n"));
         if let Some(check) = &self.check {
             out.push_str(&format!("  {}\n", check.line()));
         }
+        out.push_str(&format!("  [{REMOVE_WHIRL}]\n"));
+        out.push_str(&format!("  {REMOVE_WHIRL_LINE}\n"));
+        if let Some(route) = REMOVE_WHIRL_ROUTE {
+            out.push_str(&format!("  {route}\n"));
+        }
+        if self.confirming == Some(Removal::Whirl) {
+            out.push_str(&format!("  {CONFIRM_REMOVE_WHIRL}\n"));
+        }
         out
+    }
+
+    /// The token a switch draws: on, off, or a state that cannot be read and so
+    /// has no position.
+    fn switch(position: Option<bool>) -> &'static str {
+        match position {
+            Some(true) => "[x]",
+            Some(false) => "[ ]",
+            None => "[-]",
+        }
+    }
+
+    /// `Launch at login`'s position, or `None` when the state has not been read
+    /// or could not be.
+    pub fn launch_position(&self) -> Option<bool> {
+        self.helper
+            .as_ref()
+            .and_then(|helper| helper.readable().then(|| helper.on()))
+    }
+
+    /// The line beside `Launch at login`: what the state is, or Whirl's own
+    /// sentence when it could not be read, or the plain fact that nothing has
+    /// been read yet.
+    pub fn launch_state_line(&self) -> String {
+        match &self.helper {
+            Some(helper) => helper.state_line().unwrap_or_else(|| UNREAD.to_string()),
+            None => UNREAD.to_string(),
+        }
+    }
+
+    /// `Open Whirl at login`'s position, or `None` when the state has not been
+    /// read or macOS could not be asked.
+    pub fn login_position(&self) -> Option<bool> {
+        self.login
+            .as_ref()
+            .and_then(|login| login.readable().then(|| login.on()))
+    }
+
+    /// The line beside `Open Whirl at login`: macOS's own words, or the plain
+    /// fact that nothing has been read yet.
+    pub fn login_state_line(&self) -> String {
+        match &self.login {
+            Some(login) => login.line().to_string(),
+            None => UNREAD.to_string(),
+        }
     }
 }
 
@@ -1522,14 +2019,18 @@ mod tests {
             lines[1].starts_with("Wallhaven, a remote collection: "),
             "{lines:?}"
         );
-        // And no line of the window carries a key name or a file key.
+        // And no line of the window carries a key name or a file key. `schedule`
+        // is left out of this list on purpose: it is a word the Background
+        // Helper's first line uses for the Rotation pane ("the schedule you set
+        // under Rotation"), while the file's key of that name reaches the window
+        // only as `"schedule":`, which is what is checked here.
         let text = settings.to_text();
         for forbidden in [
-            "schedule",
             "interval_seconds",
             "api_key_ref",
             "weight=",
             "sources[",
+            "\"schedule\":",
         ] {
             assert!(!text.contains(forbidden), "{forbidden} in:\n{text}");
         }
@@ -2086,15 +2587,15 @@ mod tests {
         assert!(!Daemon::NotRunning("gone".to_string()).answered());
     }
 
-    /// The paused line reaches the text the window prints, and the About block
-    /// says the same word rather than its `connected` form.
+    /// The paused line reaches the text the window prints, and the Background
+    /// Helper pane names the build Whirl answered with.
     #[test]
-    fn the_window_text_carries_the_paused_line_and_the_about_block_agrees() {
+    fn the_window_text_carries_the_paused_line_and_the_helper_pane_agrees() {
         let (mut settings, _path) = window_from("paused-line", CONFIG);
         let running = settings.to_text();
         assert!(running.contains("whirl is running"), "{running}");
         assert!(
-            running.contains("the daemon: whirl 0.1.0, connected"),
+            running.contains("the Background Helper is whirl 0.1.0"),
             "{running}"
         );
 
@@ -2102,9 +2603,8 @@ mod tests {
         let text = settings.to_text();
         assert!(text.contains("whirl is paused"), "{text}");
         assert!(!text.contains("whirl is running"), "{text}");
-        assert!(text.contains("the daemon: whirl 0.1.0, paused"), "{text}");
         assert!(
-            !text.contains("the daemon: whirl 0.1.0, connected"),
+            text.contains("the Background Helper is whirl 0.1.0"),
             "{text}"
         );
     }
@@ -2141,26 +2641,47 @@ mod tests {
     fn the_controls_that_edit_are_the_ones_a_person_asked_for() {
         let (settings, _path) = window_from("controls", CONFIG);
         let text = settings.to_text();
-        // The two choices, the daemon's line, and the About block, in the order
-        // the sidebar lists them. Nothing else is on screen.
-        let order: Vec<usize> = [SOURCES_TITLE, ROTATION_TITLE, ABOUT_TITLE]
-            .iter()
-            .map(|title| text.find(title).unwrap_or_else(|| panic!("{title}")))
-            .collect();
-        assert!(order[0] < order[1], "{text}");
-        assert!(order[1] < order[2], "{text}");
-        // The daemon's line says where a change lands, and the About block is
-        // the last thing on screen: the check has not been made yet, so the
-        // check's own line is last.
-        assert!(text.contains(APP_DAEMON_NOTE), "{text}");
-        assert!(text.trim_end().ends_with(CHECK_LINE), "{text}");
+        // The five panes, in the order the sidebar lists them. Nothing else is on
+        // screen.
+        let order: Vec<usize> = [
+            SOURCES_TITLE,
+            ROTATION_TITLE,
+            HELPER_TITLE,
+            CONTROL_PANEL_TITLE,
+            ABOUT_TITLE,
+        ]
+        .iter()
+        .map(|title| text.find(title).unwrap_or_else(|| panic!("{title}")))
+        .collect();
+        for pair in order.windows(2) {
+            assert!(pair[0] < pair[1], "{text}");
+        }
+        // The window's own line says whether Whirl answered, and the About block
+        // is the last thing on screen: no check has been made, so the removal row
+        // is last and its sentence is the final line.
+        assert!(text.contains(&Daemon::Running.line()), "{text}");
         assert!(
-            text.find("whirl is running").expect("the daemon's line")
+            text.trim_end()
+                .ends_with(REMOVE_WHIRL_ROUTE.unwrap_or(REMOVE_WHIRL_LINE)),
+            "{text}"
+        );
+        assert!(
+            text.find("whirl is running").expect("the window's line")
                 < text.find(ABOUT_TITLE).expect("the About block"),
             "{text}"
         );
         assert!(text.contains(CHECK_LABEL), "{text}");
-        // No section dumps the rest of the file: the App pane's report is gone.
+        assert!(text.contains(REMOVE_HELPER), "{text}");
+        assert!(text.contains(REMOVE_WHIRL), "{text}");
+        // The two groups start closed, so the machinery's own names are not on
+        // the surface until a person opens them.
+        assert!(text.contains(&format!("[{ADVANCED_TITLE}]")), "{text}");
+        assert!(
+            !text.contains("whirl daemon install"),
+            "the Advanced group is closed: {text}"
+        );
+        // No section dumps the rest of the file: the removed App pane's report
+        // went with it, and no other pane picked it up.
         for gone in [
             "socket: live",
             "daemon_version",
@@ -2172,22 +2693,24 @@ mod tests {
     }
 
     /// The About block carries what the card asks a report to be able to paste:
-    /// the description, the version, the source, the daemon, and the check.
+    /// the description, the version, the source, the newer-release check, and the
+    /// one removal row. The runner's own version is on the Background Helper pane,
+    /// which is where the thing it names is set.
     #[test]
-    fn the_about_block_carries_the_description_the_source_and_the_daemon() {
+    fn the_about_block_carries_the_description_the_source_and_the_removal() {
         let (settings, _path) = window_from("about", CONFIG);
         let text = settings.to_text();
         assert!(text.contains(ABOUT_LINE), "{text}");
         assert!(text.contains(about::SOURCE_URL), "{text}");
-        // The daemon answered `version`, so its own version is on screen, and
-        // the key name it arrived under is not.
+        // Whirl answered `version`, so the Background Helper pane names its build,
+        // and the key name it arrived under is not on screen.
         assert!(
-            text.contains("the daemon: whirl 0.1.0, connected"),
+            text.contains("the Background Helper is whirl 0.1.0"),
             "{text}"
         );
         assert!(!text.contains("daemon_version"), "{text}");
         // The source is a sentence, not a `source:` record a reader could take
-        // for one of the daemon's.
+        // for one of Whirl's.
         assert!(!text.contains("source: "), "{text}");
         // No check has been run, so no outcome is on screen.
         assert!(settings.check.is_none(), "{:?}", settings.check);
@@ -2228,6 +2751,68 @@ mod tests {
         settings.interval.in_use = Some(21600);
         let text = settings.to_text();
         assert!(text.contains("whirl is using every 6 hours now"), "{text}");
+    }
+
+    /// Each state Whirl can report has one position on the switch, and the two
+    /// states a person can act on are the only two that offer anything to press.
+    #[test]
+    fn each_state_whirl_reports_is_one_switch_position() {
+        let running = Helper::of(&daemon_cli::Outcome::Done(
+            "status: com.guruor.whirl running".to_string(),
+        ));
+        assert_eq!(running, Helper::Running);
+        assert!(!running.start_now(), "a running unit has nothing to start");
+
+        let stopped = Helper::of(&daemon_cli::Outcome::Refused(
+            "status: com.guruor.whirl loaded, not running".to_string(),
+        ));
+        assert_eq!(stopped, Helper::Stopped);
+        assert!(stopped.start_now(), "and the way out of it is `Start now`");
+
+        let absent = Helper::of(&daemon_cli::Outcome::Unreachable(
+            "no job for com.guruor.whirl".to_string(),
+        ));
+        assert_eq!(absent, Helper::Absent);
+        assert!(!absent.start_now());
+
+        // The three readable states, each as one switch position and one line in
+        // the app's own words.
+        let cases = [
+            (running, "[x]", "it is running now"),
+            (stopped, "[x]", "it is loaded and stopped"),
+            (absent, "[ ]", "it is not installed"),
+        ];
+        for (state, token, line) in cases {
+            let settings = window_with_helper(state);
+            assert_eq!(Settings::switch(settings.launch_position()), token);
+            assert_eq!(settings.launch_state_line(), line);
+        }
+
+        // A state this build does not read is not a position: the switch is
+        // drawn where it cannot be moved, with Whirl's own sentence beside it.
+        for refused in [
+            daemon_cli::Outcome::Usage("whirl: daemon is not a command".to_string()),
+            daemon_cli::Outcome::Missing("the `whirl` command was not found".to_string()),
+            daemon_cli::Outcome::Failed("the command ended without an exit code".to_string()),
+            daemon_cli::Outcome::Unanswered("the command did not answer".to_string()),
+        ] {
+            let settings = window_with_helper(Helper::of(&refused));
+            assert_eq!(
+                Settings::switch(settings.launch_position()),
+                "[-]",
+                "{}",
+                refused.words()
+            );
+            assert_eq!(settings.launch_state_line(), refused.words());
+        }
+    }
+
+    /// A window with one Background Helper state put in, for the switch tests.
+    fn window_with_helper(state: Helper) -> Settings {
+        let mut settings =
+            Settings::from_answers(&settings_answers_for(Path::new("/no-file-here.json")));
+        settings.helper = Some(state);
+        settings
     }
 
     // A helper the tests above share: the window on a file of our own, built the

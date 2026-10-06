@@ -101,6 +101,23 @@ fn receipt_path() -> Option<PathBuf> {
     home().map(|home| home.join("Library/Application Support/whirl-ui/install.receipt"))
 }
 
+/// Forget the install receipt, so nothing this app runs looks for a binary a
+/// removal has just taken away.
+///
+/// `Remove Whirl completely` is the only caller. The receipt being absent is the
+/// state the call asks for, so a receipt that was never written is not an error;
+/// anything else the file system said is reported in its own words.
+pub fn forget_receipt() -> Result<(), String> {
+    let Some(path) = receipt_path() else {
+        return Err("there is no home directory, so there is no install receipt".to_string());
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("could not remove {}: {error}", tilde(&path))),
+    }
+}
+
 /// `$WHIRL_PREFIX/whirl` when a prefix was given, else `~/.local/bin/whirl`.
 fn prefix_candidate() -> Option<PathBuf> {
     match env::var_os("WHIRL_PREFIX") {

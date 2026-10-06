@@ -53,7 +53,7 @@ pub enum Mode {
     Sources,
     /// `config check`, the effective plan.
     ConfigCheck,
-    /// What the settings window shows, as three panes.
+    /// What the settings window shows, as its five panes.
     Settings,
     /// The menu bar item's rows, in the order they appear on screen.
     Menu,
@@ -117,7 +117,13 @@ pub fn run(mode: Mode) -> ExitCode {
         // shows the reason, so it is built from four possibly-failed answers
         // rather than from a connection.
         let (answers, code) = settings_answers();
-        print_block(&Settings::from_answers(&answers).to_text());
+        let mut settings = Settings::from_answers(&answers);
+        // The two switches are states, and this is the same read the panes make
+        // when they are shown: a dump that printed an unread switch would be a
+        // dump of something nobody sees.
+        settings.read_helper();
+        settings.read_login();
+        print_block(&settings.to_text());
         return ExitCode::from(code);
     }
 

@@ -149,7 +149,8 @@ reason it has nothing to show: a pane that showed an empty list would be saying 
 
 `--screenshot` writes the window's own pixels rather than the screen's, so the file carries the window
 and nothing else that happened to be on the machine. It takes any of the states `sources`, `rotation`,
-`app`, `about`, `chooser`, `key`, `rejected`, `words`, `check-newer`, `check-newest`, `check-failed`:
+`helper`, `control-panel`, `about`, `chooser`, `key`, `rejected`, `words`, `check-newer`,
+`check-newest`, `check-failed`:
 
     $ whirl-ui --screenshot <path> sources
     whirl-ui: wrote the settings window to <path>
