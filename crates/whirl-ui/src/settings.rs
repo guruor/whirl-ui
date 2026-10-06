@@ -478,11 +478,11 @@ impl Row {
         }
     }
 
-    /// The words when the check ran: how much the source holds.
+    /// The words when the check ran: how much of the source whirl measured.
     fn holds(&self, record: &SourceRecord) -> State {
         let count = counter(record, CANDIDATES);
         let holding = match &self.kind {
-            Kind::Folder { .. } => picture(count),
+            Kind::Folder { .. } => folder_holding(count),
             Kind::Wallhaven { key, .. } => match key {
                 KeyState::Saved => format!("{} with the saved key", wallpaper(count)),
                 KeyState::NeedsKey => {
@@ -1723,12 +1723,28 @@ fn counter(record: &SourceRecord, name: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// How many pictures a folder holds, in a person's words.
-fn picture(count: u64) -> String {
+/// What a folder gives whirl, and why the number can be smaller than what a
+/// person sees in Finder.
+///
+/// The count is the daemon's own `candidates` for the source: the pictures the
+/// worker could find and measure. A file whose header the worker cannot read is
+/// excluded before that count and reaches the daemon's log instead ("entries
+/// skipped: N unreadable"), so the row can say only what whirl counted, never
+/// what the folder holds. "Holds 23 pictures" for a folder of 29 is a number the
+/// person cannot reconcile with what they see; what whirl counted is not.
+fn folder_holding(count: u64) -> String {
+    format!(
+        "counted {}; a picture it cannot read is not counted",
+        pictures(count)
+    )
+}
+
+/// How many pictures whirl counted, in a person's words.
+fn pictures(count: u64) -> String {
     match count {
-        0 => "holds no pictures".to_string(),
-        1 => "holds one picture".to_string(),
-        count => format!("holds {count} pictures"),
+        0 => "no pictures".to_string(),
+        1 => "one picture".to_string(),
+        count => format!("{count} pictures"),
     }
 }
 
@@ -2877,7 +2893,8 @@ mod tests {
         );
         assert_eq!(
             words,
-            "whirl can read this folder, and it holds 412 pictures"
+            "whirl can read this folder, and it counted 412 pictures; a picture it cannot read is \
+             not counted"
         );
     }
 
@@ -2892,7 +2909,8 @@ mod tests {
         );
         assert_eq!(
             words,
-            "whirl can read this folder, and it holds no pictures"
+            "whirl can read this folder, and it counted no pictures; a picture it cannot read is \
+             not counted"
         );
     }
 
@@ -3170,7 +3188,7 @@ mod tests {
         assert!(
             under
                 .trim_start()
-                .starts_with("whirl can read this folder, and it holds 7"),
+                .starts_with("whirl can read this folder, and it counted 7"),
             "{under:?}"
         );
         assert!(under.starts_with("      "), "under its row: {under:?}");
