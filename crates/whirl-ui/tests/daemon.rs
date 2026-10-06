@@ -32,6 +32,18 @@ printf '%s\n' "$*" >> "$log"
 # with two copies can see which copy the app chose. `${0%/*}` rather than
 # `dirname`, because a test may run with almost nothing on `PATH`.
 : > "${0%/*}/ran"
+# A test can make one call take its time, so that the app's deadline can be
+# shown firing: the stand-in sleeps before it answers anything, and records the
+# pid it sleeps under beside itself. The sleep is `exec`d, so that pid is the
+# process the app must end rather than a shell waiting on one.
+case "$1" in
+  --version) sleep_for=${WHIRL_STUB_SLEEP_VERSION:-} ;;
+  *)         sleep_for=${WHIRL_STUB_SLEEP_DAEMON:-} ;;
+esac
+if [ -n "$sleep_for" ]; then
+  printf '%s\n' "$$" > "${0%/*}/pid"
+  exec sleep "$sleep_for"
+fi
 # The app identifies a binary that answered the wrong way by asking for its
 # static version. A stand-in answers only when the test gave it one, so a test
 # that does not is the build from before the flag exists.
@@ -117,6 +129,50 @@ impl Stub {
     /// apart.
     fn ran(&self) -> bool {
         self.directory.join("ran").exists()
+    }
+
+    /// Pay the one-off cost of running a file this machine has never run.
+    ///
+    /// The first execution of a script that was just written costs hundreds of
+    /// milliseconds on macOS, measured here at 0.69 s against 0.07 s for the
+    /// second run of the same file, because the platform checks a new executable
+    /// before it will run it. A test that puts a bound on how long a child may
+    /// live has to spend that cost before the app runs, or the bound is spent on
+    /// the check rather than on the child. The warm-up's call log is a file of
+    /// its own, and the marks it leaves beside the stand-in are cleared, so the
+    /// app's own run is all that `calls`, `slept` and `ran` see.
+    fn warm(&self) {
+        let _ = Command::new(self.command())
+            .arg("--version")
+            .env("WHIRL_STUB_LOG", self.directory.join("warmup.log"))
+            .env_remove("WHIRL_STUB_SLEEP_VERSION")
+            .env_remove("WHIRL_STUB_SLEEP_DAEMON")
+            .output();
+        let _ = std::fs::remove_file(self.directory.join("ran"));
+        let _ = std::fs::remove_file(self.directory.join("pid"));
+    }
+
+    /// The pid a call recorded before sleeping, when one got that far.
+    fn slept(&self) -> Option<String> {
+        std::fs::read_to_string(self.directory.join("pid"))
+            .ok()
+            .map(|pid| pid.trim().to_string())
+    }
+
+    /// Whether the app ended the sleeper rather than leaving it running.
+    ///
+    /// `ps` is asked about the pid the stand-in recorded: the sleep is the app's
+    /// own child, so a child that was merely abandoned would still be a process
+    /// here, and one killed without being reaped would be a zombie that `ps`
+    /// still names.
+    fn ended(&self) -> bool {
+        let Some(pid) = self.slept() else {
+            return false;
+        };
+        match Command::new("ps").args(["-o", "pid=", "-p", &pid]).output() {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+            Err(_) => false,
+        }
     }
 
     /// A `PATH` of the stand-in and nothing else the app could need.
@@ -323,6 +379,94 @@ fn a_binary_that_cannot_name_a_version_is_still_named_and_not_called_missing() {
         "{message}"
     );
     assert!(!message.contains("no whirl was found"), "{message}");
+}
+
+#[test]
+fn a_daemon_command_that_never_answers_is_ended_and_not_read_as_a_refusal() {
+    // The bound on the `daemon <verb>` wait. A stand-in that sleeps long past
+    // the deadline must not hang the app: the app returns, with its own
+    // sentence, and the child it started is gone rather than left behind.
+    let stub = Stub::new("deadline-verb");
+    stub.warm();
+    let output = app(
+        &stub,
+        &[
+            ("WHIRL_STUB_SLEEP_DAEMON", "30"),
+            ("WHIRL_UI_DAEMON_DEADLINE_MS", "2000"),
+        ],
+        &["--daemon", "status"],
+    );
+    let message = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(2), "{message}");
+    assert!(
+        message.contains(&stub.command().display().to_string()),
+        "the binary is named: {message}"
+    );
+    assert!(
+        message.contains("daemon status`"),
+        "the command is named: {message}"
+    );
+    assert!(
+        message.contains("did not answer within 2 s"),
+        "the bound that ran out is named: {message}"
+    );
+    assert!(
+        message.contains("The daemon did not refuse"),
+        "a wait that ran out is not a refusal: {message}"
+    );
+    assert!(
+        !message.contains("status: com.guruor.whirl running"),
+        "nothing the daemon did not say is quoted: {message}"
+    );
+    // One call, which got as far as its sleep and no further: the app ended it.
+    assert_eq!(stub.calls(), vec!["daemon status"]);
+    assert!(stub.slept().is_some(), "the stand-in slept");
+    assert!(stub.ended(), "the child is gone, not left behind");
+}
+
+#[test]
+fn a_version_probe_that_never_answers_is_ended_and_is_not_read_as_silence() {
+    // The bound on the `--version` wait. The verb answers usage, so the app goes
+    // on to identify the binary, and that probe sleeps past the deadline. The
+    // app must return with its own sentence and end the probe, and it must not
+    // report the ended probe as the older binary that answers nothing.
+    let stub = Stub::new("deadline-version");
+    let usage = "whirl: daemon is not a command, or it has the wrong number of arguments";
+    stub.warm();
+    let output = app(
+        &stub,
+        &[
+            ("WHIRL_STUB_STATUS_CODE", "3"),
+            ("WHIRL_STUB_STATUS_WORDS", usage),
+            ("WHIRL_STUB_SLEEP_VERSION", "30"),
+            ("WHIRL_UI_DAEMON_DEADLINE_MS", "2000"),
+        ],
+        &["--daemon", "status"],
+    );
+    assert_eq!(output.status.code(), Some(3), "{}", stdout_of(&output));
+    let message = stderr_of(&output);
+    assert!(
+        message.contains(&stub.command().display().to_string()),
+        "the binary is named: {message}"
+    );
+    assert!(
+        message.contains("was ended by the app"),
+        "the app says it ended the probe: {message}"
+    );
+    assert!(
+        message.contains("did not answer within 2 s"),
+        "the bound that ran out is named: {message}"
+    );
+    assert!(
+        !message.contains("reports no version"),
+        "an ended probe is not the binary that answers nothing: {message}"
+    );
+    assert!(
+        message.contains(usage),
+        "the CLI's own words stay: {message}"
+    );
+    assert_eq!(stub.calls(), vec!["daemon status", "--version"]);
+    assert!(stub.ended(), "the probe is gone, not left behind");
 }
 
 #[test]

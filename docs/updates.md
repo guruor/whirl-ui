@@ -373,7 +373,7 @@ lines for the daemon half (`install.sh:335-346`).
 - **A silent update of the app bundle.** It cannot be done: the write into `/Applications` is the
   authorization the app cannot ask for (`install.sh:19-23`), which is D2's whole reason.
 - **Updating the app's own login item or the daemon's login unit.** The app's login item is its own
-  business; the daemon's unit is whirl's (`docs/milestones.md:63-70`), and this design writes no
+  business; the daemon's unit is whirl's (`docs/milestones.md:63-78`), and this design writes no
   unit (`install.sh:29-32`).
 - **A `config get` / `config set` verb, or any daemon verb for updates.** The protocol grows nothing
   here; the config stays the write surface under ADR 0002 (ADR 0002, decision 1, and its "Forbids"
@@ -402,7 +402,7 @@ the daemon's contract lives in its own.
 | archive and `.sha256` are written by the bundler | `scripts/make-bundle.sh:162-169` |
 | the app is ad-hoc signed, not notarized | `scripts/make-bundle.sh:19-29`, `scripts/make-bundle.sh:138-158` |
 | the checksum is a delivery check, not an identity | `docs/releases/v0.1.0.md:69-80` |
-| the app does not own the daemon's lifetime | `docs/milestones.md:63-70`; `whirl docs/architecture.md` §8 "must never" 3 (lines 1798-1800) |
+| the app does not own the daemon's lifetime | `docs/milestones.md:63-78`; `whirl docs/architecture.md` §8 "must never" 3 (lines 1798-1800) |
 | §8 "must never" 1-9 | `whirl docs/architecture.md:1790-1814` |
 | the OS supervisor owns the daemon's lifetime | `whirl docs/architecture.md` §5.1-§5.2 (lines 1534-1571) |
 | `launchctl kickstart -k` is the supervisor's action | `whirl docs/architecture.md:1569-1570` |
