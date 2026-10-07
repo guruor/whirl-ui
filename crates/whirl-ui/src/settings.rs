@@ -630,8 +630,9 @@ pub enum Kind {
 pub enum KeyState {
     /// An item is in the platform's store. The window has not read its value.
     Saved,
-    /// No item is in the store: the source needs a key.
-    NeedsKey,
+    /// No item is in the store: no key is saved for the source. Whether one is
+    /// needed is the daemon's to say, and it says it in the refusal reason.
+    NoKeySaved,
     /// The store could not be asked, which is not the same fact as a missing key.
     CannotTell(String),
     /// The config file names a key that is not this app's to resolve.
@@ -643,7 +644,7 @@ impl KeyState {
     pub fn phrase(&self) -> String {
         match self {
             KeyState::Saved => "a key is saved".to_string(),
-            KeyState::NeedsKey => "needs a key".to_string(),
+            KeyState::NoKeySaved => "no key is saved".to_string(),
             KeyState::CannotTell(reason) => {
                 format!("cannot tell whether a key is saved ({reason})")
             }
@@ -780,7 +781,7 @@ impl Row {
             Kind::Folder { .. } => folder_holding(count),
             Kind::Wallhaven { key, .. } => match key {
                 KeyState::Saved => format!("{} with the saved key", wallpaper(count)),
-                KeyState::NeedsKey => {
+                KeyState::NoKeySaved => {
                     format!("{} without a key, so it is public", wallpaper(count))
                 }
                 // The daemon's record says how many pictures it found; it does not
@@ -2377,7 +2378,7 @@ fn key_state(key_ref: Option<&str>, exists: Result<bool, String>) -> KeyState {
         Some(label) if label != keychain::LABEL => KeyState::NotOurs,
         _ => match exists {
             Ok(true) => KeyState::Saved,
-            Ok(false) => KeyState::NeedsKey,
+            Ok(false) => KeyState::NoKeySaved,
             Err(reason) => KeyState::CannotTell(reason),
         },
     }
@@ -2557,7 +2558,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], "A folder on this Mac: /tmp/walls");
         // The Wallhaven row says what the store answered and nothing else: a key
-        // is saved, needs one, or cannot be asked about.
+        // is saved, none is saved, or the store cannot be asked about.
         assert!(
             lines[1].starts_with("Wallhaven, a remote collection: "),
             "{lines:?}"
@@ -3465,6 +3466,72 @@ mod tests {
             .state_line(&settings.sources.checks)
             .expect("every row says what is known about its source")
             .phrase
+    }
+
+    /// The collection row's own line and its state line at once, so a test can
+    /// show the two sentences about the one source together. The config is
+    /// [`TWO`] and the store holds no key, which is the state the observed
+    /// report was taken in.
+    fn collection_lines(tag: &str, check: Vec<String>) -> (String, String) {
+        let (_directory, path) = scratch(tag, TWO);
+        let answers = Answers::live(
+            vec![format!("config: {}", path.display())],
+            check,
+            Vec::new(),
+        );
+        let settings = Settings::from_answers_with(&answers, &no_key());
+        let row = settings
+            .sources
+            .rows
+            .iter()
+            .find(|row| row.id == "space")
+            .expect("the collection row");
+        (
+            row.line(),
+            row.state_line(&settings.sources.checks)
+                .expect("every row says what is known about its source")
+                .phrase,
+        )
+    }
+
+    #[test]
+    fn a_collection_with_nothing_in_the_key_store_says_no_key_is_saved() {
+        // An empty store is a fact about this machine, not about what the
+        // collection asks for: the row says only the fact it has.
+        let (line, state) =
+            collection_lines("no-key-saved", vec![record("space", "wallhaven", 97, None)]);
+        assert_eq!(
+            line,
+            "Wallhaven, a remote collection: alice/12345 (no key is saved)"
+        );
+        assert!(!line.contains("needs a key"), "{line}");
+        // The two sentences about the one source agree rather than contradict.
+        assert!(state.contains("without a key, so it is public"), "{state}");
+        assert!(!state.contains("needs a key"), "{state}");
+    }
+
+    #[test]
+    fn a_collection_whose_reason_names_a_missing_key_still_says_the_key_is_needed() {
+        // The daemon's reason is the one thing that says a key is needed, and it
+        // says it whatever the store holds. `Wallhaven::refuse`'s words for a
+        // purity only a key can ask for (2.4): `requires an API key`.
+        let reason = "sources[id=space].purity (line 3): purity=111 requires an API key, none \
+                      resolvable (checked env WHIRL_WALLHAVEN_API_KEY, keychain label \
+                      'whirl-wallhaven')";
+        let (line, state) = collection_lines(
+            "reason-needs-key",
+            vec![record("space", "wallhaven", 0, Some(reason))],
+        );
+        // The row's own line still states what the store answered and nothing
+        // more, so it is the state line below it that carries the requirement.
+        assert_eq!(
+            line,
+            "Wallhaven, a remote collection: alice/12345 (no key is saved)"
+        );
+        assert!(
+            state.contains("it needs a key, and none is saved"),
+            "{state}"
+        );
     }
 
     #[test]
