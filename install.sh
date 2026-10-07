@@ -72,6 +72,36 @@
 #   WHIRL_PREFIX       ~/.local/bin        where the three daemon binaries go
 #   WHIRL_UNIT         unset                set to `install` to ask whirl's own command
 #                                          to install its login unit; unset writes none
+#   WHIRL_CHANNEL      unset                reserved, and not read yet: `unstable` would
+#                                          resolve the newest prerelease of each repository,
+#                                          and a run would take those two tags and print
+#                                          them. See the candidates below.
+#
+# A release candidate is installed through the two version overrides, and that is the only
+# route there is. The script takes no arguments: anything but --help exits 2, and
+# scripts/check-release-pins.sh compares these two defaults against the tag before anything
+# is built, so the word for a candidate is an environment override and not a flag.
+#
+# The two are not written the same way, because the two repositories name the same thing
+# differently: the app's default is the bare number 0.2.4 and its tag adds the v, while the
+# daemon's default already carries it.
+#
+#   WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+#       the daemon at a candidate, the app left at its release: the daemon candidate
+#       replaces whatever daemon is here, and Whirl 0.2.4 is installed as usual.
+#
+#   WHIRL_UI_VERSION=0.2.5-rc.1 WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+#       both halves at candidates: the app from the tag v0.2.5-rc.1, which is the archive
+#       Whirl-0.2.5-rc.1.zip, and the daemon from the tag v0.2.2-rc.2. No app candidate has
+#       been published, so this half is the shape to reach for when one is, and until then
+#       it stops at the app's download.
+#
+# WHIRL_CHANNEL=unstable is the form to build later, and it is not built: it would resolve
+# the newest prerelease of each repository and print what it resolved, so the pair a run
+# installs is on record rather than guessed. Resolution makes a run non-reproducible until
+# the resolved tags are printed and written with the receipt, which is why the two commands
+# above name their candidates instead. Set today, `WHIRL_CHANNEL=unstable sh install.sh`
+# installs exactly what no override installs: nothing in this script reads it.
 #
 # Exit codes: 0 installed or reused, as reported; 1 refused (platform, download,
 # checksum, unwritable destination); 2 no arguments are taken; 3 the app's prefix needs
