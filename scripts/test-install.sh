@@ -24,7 +24,7 @@
 #   1. an older stand-in that names its version  -> replaced by the pinned release, and
 #      the output says which version was replaced and why
 #   2. an older stand-in that answers no         -> replaced too, judged by the absence of
-#      `--version` and of the `daemon` command
+#      `--version`, even though its usage lists no `daemon` verb
 #   3. a pinned stand-in                         -> reused byte for byte, and the output
 #      says so
 #   4. uninstall.sh over scenario 1's receipt     -> the app and the daemon binaries go,
@@ -40,6 +40,13 @@
 #   8. a receipt that does not name that binary   -> no uninstall is asked for
 #   9. whirl refuses to remove the unit            -> the binary it runs is kept, and the
 #      run says the login item is still there rather than claiming a clean removal
+#  10. an older stand-in that answers no `--version` while its usage does list the `daemon`
+#      verbs                                       -> replaced as well: "cannot name a
+#      version" is not evidence of being current, so a CLI that answers no version is
+#      never reused
+#  11. a stand-in newer than the pin               -> reused, and the daemon archive is
+#      pointed at a path that does not exist, so a run that downloaded anything would
+#      refuse; the three binaries are unchanged
 #
 # Every scenario also checks the receipt: it names the daemon binaries in the replaced and
 # the reused case alike.
@@ -85,8 +92,10 @@ receipt_has() {
 
 # write_daemon <dir> <kind>: the three binaries, as one release answers. kind is `pinned`
 # (0.2.0, with `--version` and the whole `daemon` verb list, the login-unit pair included),
-# `versioned-old` (0.1.0, with `--version`) or `unversioned-old` (neither). The two older
-# kinds list no `daemon` verb at all, which is how whirl v0.1 answered, and the pinned one
+# `newer` (0.3.0, the same shape), `versioned-old` (0.1.0, with `--version`),
+# `unversioned-old` (neither) or `daemon-only` (no `--version`, yet its usage lists the
+# `daemon` verbs, the shape whirl v0.2.0 shipped). `versioned-old` and `unversioned-old`
+# list no `daemon` verb at all, which is how whirl v0.1 answered, and the pinned one
 # writes each unit verb it is asked for into $WHIRL_UNIT_LOG when that is set.
 write_daemon() {
     dir=$1
@@ -150,6 +159,50 @@ printf '  next                 set the next image now\n' >&2
 exit 3
 SCRIPT
             side=unversioned-old
+            ;;
+        daemon-only)
+            # The shape whirl v0.2.0 shipped: `--version` is not a verb yet, so the CLI
+            # answers an error and its usage, and that usage does list the `daemon` verbs.
+            # Reading "it lists `daemon`" as "it is current" is what kept a stale daemon.
+            cat > "$dir/whirl" <<'SCRIPT'
+#!/bin/sh
+printf 'whirl: --version is not a command, or it has the wrong number of arguments\n' >&2
+printf 'usage: whirl <command>\n' >&2
+printf '  next                 set the next image now\n' >&2
+printf '  daemon install       write the login unit and load it (macOS)\n' >&2
+printf '  daemon uninstall     stop the daemon and remove the login unit (macOS)\n' >&2
+printf '  daemon start         ask the supervisor to start the daemon (macOS)\n' >&2
+printf '  daemon stop          ask the supervisor to stop the daemon (macOS)\n' >&2
+exit 3
+SCRIPT
+            side=daemon-only
+            ;;
+        newer)
+            cat > "$dir/whirl" <<'SCRIPT'
+#!/bin/sh
+usage() {
+    printf 'usage: whirl <command>\n'
+    printf '  next                 set the next image now\n'
+    printf '  daemon install       write the login unit and load it (macOS)\n'
+    printf '  daemon uninstall     stop the daemon and remove the login unit (macOS)\n'
+}
+case "${1-}" in
+    --version) printf 'whirl 0.3.0\n'; exit 0 ;;
+    help) usage; exit 0 ;;
+    daemon)
+        case "${2-}" in
+            install|uninstall|start|stop|status)
+                [ -n "${WHIRL_UNIT_LOG-}" ] && printf '%s\n' "$2" >> "$WHIRL_UNIT_LOG"
+                exit 0
+                ;;
+        esac
+        ;;
+esac
+usage >&2
+printf 'whirl: a command is required\n' >&2
+exit 3
+SCRIPT
+            side=newer
             ;;
         *)
             fail "write_daemon: unknown kind $kind"
@@ -347,8 +400,8 @@ out=$(run_install "$prefix" "$ui" "$receipt" 2>&1)
 status=$?
 printf '%s\n' "$out"
 [ "$status" -eq 0 ] || fail "scenario 2: install.sh exited $status"
-contains "$out" "is older than v0.2.0" || fail "scenario 2: the run does not say the found daemon is older"
-contains "$out" "no \`daemon\` command" || fail "scenario 2: the run does not name the missing daemon command"
+contains "$out" "answers no --version" || fail "scenario 2: the run does not say the found daemon answers no version"
+contains "$out" "is not shown to be v0.2.0 or newer" || fail "scenario 2: the run does not say why the daemon is replaced"
 after=$(sha_of "$prefix/whirl")
 [ "$before" != "$after" ] || fail "scenario 2: the older whirl binary was not replaced"
 "$prefix/whirl" --version | grep -q 'whirl 0.2.0' || fail "scenario 2: the installed whirl is not the pinned 0.2.0"
@@ -573,5 +626,90 @@ contains "$out" "still points at" ||
     fail "scenario 9: the run does not say the login item is still there"
 scenarios=$((scenarios + 1))
 ok "scenario 9: a refused unit removal keeps the binary and reports the login item is still there"
+
+# ---------------------------------------------------------------------------
+# 10. a CLI that answers no --version while its usage lists the `daemon` verbs is replaced
+#
+# This is the case the reuse rule used to get wrong: "it answers no --version" was read as
+# "it is not older than the pin", so a stale daemon was kept and the override installed
+# nothing.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 10: a CLI that answers no --version but lists daemon is replaced ==="
+prefix=$work/s10/prefix
+ui=$work/s10/ui
+receipt=$work/s10/receipt
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+write_daemon "$prefix" daemon-only
+before=$(sha_of "$prefix/whirl")
+out=$(run_install "$prefix" "$ui" "$receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 10: install.sh exited $status"
+contains "$out" "reusing the daemon" &&
+    fail "scenario 10: a CLI that answers no version was reused"
+contains "$out" "answers no --version" ||
+    fail "scenario 10: the run does not say the found daemon answers no version"
+contains "$out" "v0.2.0 replaces it" ||
+    fail "scenario 10: the run does not say the pin replaces the daemon"
+[ "$before" != "$(sha_of "$prefix/whirl")" ] ||
+    fail "scenario 10: the unversioned whirl binary was not replaced"
+"$prefix/whirl" --version | grep -q 'whirl 0.2.0' ||
+    fail "scenario 10: the installed whirl is not the pinned 0.2.0"
+receipt_has "$receipt" "binary $prefix/whirl" || fail "scenario 10: the receipt does not name $prefix/whirl"
+receipt_has "$receipt" "binary $prefix/whirld" || fail "scenario 10: the receipt does not name $prefix/whirld"
+receipt_has "$receipt" "binary $prefix/whirl-worker" || fail "scenario 10: the receipt does not name $prefix/whirl-worker"
+scenarios=$((scenarios + 1))
+ok "scenario 10: a CLI that answers no version is replaced, not reused, and the receipt names the binaries"
+
+# ---------------------------------------------------------------------------
+# 11. a CLI newer than the pin is reused, and nothing is downloaded
+#
+# The app is already at the pinned version, and the daemon archive is pointed at a path
+# that does not exist, so a run that fetched anything at all would refuse and exit 1. A
+# pass here is the proof: no download, no changed binary.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 11: a daemon newer than the pin is reused, nothing downloaded ==="
+prefix=$work/s11/prefix
+ui=$work/s11/ui
+receipt=$work/s11/receipt
+mkdir -p "$prefix" "$ui/Whirl.app/Contents" "$(dirname "$receipt")"
+cat > "$ui/Whirl.app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleShortVersionString</key>
+    <string>$ui_version</string>
+</dict>
+</plist>
+PLIST
+write_daemon "$prefix" newer
+before=$(sha_of "$prefix/whirl")
+before_whirld=$(sha_of "$prefix/whirld")
+before_worker=$(sha_of "$prefix/whirl-worker")
+out=$(run_install "$prefix" "$ui" "$receipt" \
+    WHIRL_ARCHIVE="$work/s11-absent.tar.gz" WHIRL_SHA256="$work/s11-absent.sha256" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] ||
+    fail "scenario 11: install.sh exited $status, so it fetched an archive it should not need"
+contains "$out" "fetching" &&
+    fail "scenario 11: the run downloaded something although the daemon was reused"
+contains "$out" "reusing the daemon already installed" ||
+    fail "scenario 11: the run does not say it reused the daemon"
+contains "$out" "0.3.0, newer than v0.2.0; it is kept" ||
+    fail "scenario 11: the run does not name the newer version it kept"
+[ "$before" = "$(sha_of "$prefix/whirl")" ] || fail "scenario 11: the reused whirl binary changed"
+[ "$before_whirld" = "$(sha_of "$prefix/whirld")" ] || fail "scenario 11: the reused whirld changed"
+[ "$before_worker" = "$(sha_of "$prefix/whirl-worker")" ] || fail "scenario 11: the reused whirl-worker changed"
+receipt_has "$receipt" "binary $prefix/whirl" || fail "scenario 11: the reused daemon is not named in the receipt"
+receipt_has "$receipt" "binary $prefix/whirld" || fail "scenario 11: the reused whirld is not named in the receipt"
+receipt_has "$receipt" "binary $prefix/whirl-worker" || fail "scenario 11: the reused whirl-worker is not named in the receipt"
+scenarios=$((scenarios + 1))
+ok "scenario 11: a daemon newer than the pin is reused, nothing downloaded, binaries untouched"
 
 printf '\ntest-install: all %s scenarios passed\n' "$scenarios"
