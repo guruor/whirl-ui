@@ -53,6 +53,34 @@ state, cache and log. The daemon's own login unit is whirl's to install and whir
 neither script writes a unit file. [`docs/installation.md`](docs/installation.md) is the long version:
 both routes step by step, and the paths either one touches.
 
+### A release candidate
+
+`install.sh` carries the two releases it installs as defaults of its own, and it takes no arguments:
+anything but `--help` exits 2, and `scripts/check-release-pins.sh` compares those two defaults with
+the tag before anything is built. A prerelease therefore reaches a machine as an environment
+override, and the overrides are listed in the script's header.
+
+The daemon at a candidate, with the app left at its release:
+
+    WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+
+Both halves at candidates. The two repositories write the value differently, which is the one thing
+to get right: the app's default is the bare version number and its tag is that number with a `v` in
+front, while the daemon's default already carries the `v`. So the tag `v0.2.5-rc.1` is
+`WHIRL_UI_VERSION=0.2.5-rc.1`:
+
+    WHIRL_UI_VERSION=0.2.5-rc.1 WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+
+No app candidate has been published yet, so that second command stops at the app's download until
+one is; the daemon candidate in both commands is published.
+
+`WHIRL_CHANNEL` is the reserved word for the resolving form of this, and it is not built. Set to
+`unstable` it would resolve the newest prerelease of each repository and print what it resolved, so
+the pair a run installs is on record; it is a variable and not a flag for the same reason as every
+other override, and it is not read yet, so `WHIRL_CHANNEL=unstable sh install.sh` installs exactly
+what no override installs. Resolution arrives with the printing it needs, because a channel makes a
+run non-reproducible until the two tags it resolved are named with the run.
+
 ## Features
 
 - Rotation on a schedule. The interval is the daemon's; the app shows the one in use.
