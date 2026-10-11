@@ -236,6 +236,28 @@ daemon pin bumped to match the tag, which named a daemon release that does not e
 The release's own words are `docs/releases/<version>.md`; the GitHub release page points at that file
 rather than carrying prose of its own, and `docs/releases/` is the list of them.
 
+### A candidate
+
+A candidate is the same path with a candidate version, `vX.Y.Z-rc.N`, and two differences, both of them
+about what a reader who did not ask for one gets.
+
+The app default does not move. A candidate is opted into, by name (`WHIRL_UI_VERSION`) or by the channel
+that resolves it (`WHIRL_CHANNEL=unstable`), so the `install.sh` on `main` keeps naming the released app,
+and the `pin` job resolves that default against this repository's own published releases instead of
+comparing it with the tag. A default that named the candidate itself fails that job, and should: the
+release does not exist until the tag publishes. `scripts/check-release-pins.sh` carries the rule.
+
+The release is published as a GitHub prerelease, so it is not offered as this repository's latest
+release. The publish step passes `--prerelease` for a version with a hyphen in it, and reads the result
+back out of the API into the run's log, which is where the fact belongs.
+
+So cutting one is the same order as a release, with the version bumps left where they are:
+`WHIRL_UI_VERSION`, `Cargo.toml` and `Cargo.lock` keep naming the released version, because a candidate
+is opted into rather than handed out. Write `docs/releases/<version>.md`, land it on `main` with the
+change being previewed, then push the tag on `main`'s tip. What the candidate brings to a machine is
+resolved by `WHIRL_CHANNEL=unstable`, which takes the newest published prerelease of each repository:
+the README says what that resolves to and how to go back to the released pair.
+
 ## A first pull request
 
 - **Branch.** `<type>/<slug>`, as the merged branches show: `feat/about-pane`,
