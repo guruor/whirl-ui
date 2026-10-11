@@ -100,8 +100,11 @@ is in the receipt and not only in the terminal:
 
     grep -E 'channel|app-tag|daemon-tag' ~/Library/Application\ Support/whirl-ui/install.receipt
 
-Going back to the released pair is two commands, and the first one is the one that matters:
+Going back to the released pair is two commands, and the first one is the one that matters. Both
+scripts come from the tag the install script came from, and `uninstall.sh` is not something the
+install script downloads for you:
 
+    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.5-rc.1/uninstall.sh
     sh uninstall.sh
     sh install.sh
 
