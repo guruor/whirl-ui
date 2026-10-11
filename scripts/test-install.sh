@@ -47,6 +47,17 @@
 #  11. a stand-in newer than the pin               -> reused, and the daemon archive is
 #      pointed at a path that does not exist, so a run that downloaded anything would
 #      refuse; the three binaries are unchanged
+#  12. WHIRL_CHANNEL=unstable                      -> resolves the newest prerelease of each
+#      stand-in release list, prints both tags before the first archive is fetched, installs
+#      that pair, and writes both tags to the receipt; uninstall.sh then removes what that
+#      receipt names
+#  13. a release list with no prerelease            -> the run says so and stops, rather than
+#      falling back to a final release; nothing is installed and no receipt is written
+#  14. WHIRL_CHANNEL=<anything else>               -> refused by name, with nothing installed
+#  15. a channel beside a version override          -> refused: the pair would not be the one
+#      the channel resolved
+#  16. a release list that cannot be read            -> a missing file, and a body that names
+#      no release (the shape api.github.com answers a rate limit with): both stop the run
 #
 # Every scenario also checks the receipt: it names the daemon binaries in the replaced and
 # the reused case alike.
@@ -339,6 +350,79 @@ run_install() {
 # and the receipt named.
 run_uninstall() {
     env HOME="$1" PATH="$2" WHIRL_UI_RECEIPT="$3" sh "$root/uninstall.sh"
+}
+
+# run_plain <prefix> <ui> <receipt> [name=value ...]: install.sh with the three roots under the
+# throwaway directory, a PATH holding only the stand-ins and the system, and nothing else set.
+# It is for the runs whose subject is one variable, where every other override would be noise.
+run_plain() {
+    prefix=$1
+    ui=$2
+    receipt=$3
+    shift 3
+    env PATH="$sys_path" \
+        WHIRL_PREFIX="$prefix" \
+        WHIRL_UI_PREFIX="$ui" \
+        WHIRL_UI_RECEIPT="$receipt" \
+        "$@" \
+        sh "$root/install.sh"
+}
+
+# run_channel <prefix> <ui> <receipt> <app-list> <daemon-list> [name=value ...]: the way a
+# channel run is: WHIRL_CHANNEL=unstable and the two release lists pointed at the stand-ins,
+# and no version overrides at all, because the two versions are what the channel resolves. The
+# archives are the same stand-ins every other scenario uses: a stand-in archive carries one
+# version on purpose, and what a channel scenario is about is the pair of tags, not the
+# contents of the archive they are fetched through.
+run_channel() {
+    prefix=$1
+    ui=$2
+    receipt=$3
+    app_list=$4
+    daemon_list=$5
+    shift 5
+    run_plain "$prefix" "$ui" "$receipt" \
+        WHIRL_CHANNEL=unstable \
+        WHIRL_UI_RELEASES="$app_list" \
+        WHIRL_RELEASES="$daemon_list" \
+        WHIRL_UI_ARCHIVE="$app_archive" \
+        WHIRL_UI_SHA256="$app_sha" \
+        WHIRL_ARCHIVE="$daemon_archive" \
+        WHIRL_SHA256="$daemon_sha" \
+        "$@"
+}
+
+# write_releases <path> <final-tags> <candidate-tags> <draft-tags>: a stand-in for the release
+# list api.github.com answers with. Every tag is a release; the candidates carry
+# "prerelease": true and the drafts carry "draft": true as well, because a draft is not
+# published and a channel must not resolve to one. The keys are written in an order the API
+# does not use, on purpose: install.sh reads the object by key name, and a list in another
+# order is how that is visible rather than assumed. Each list is space-separated and may be
+# empty.
+write_releases() {
+    path=$1
+    finals=$2
+    candidates=$3
+    drafts=$4
+    {
+        printf '[\n'
+        first=yes
+        for tag in $finals $candidates $drafts; do
+            prerelease=false
+            draft=false
+            case " $candidates $drafts " in
+                *" $tag "*) prerelease=true ;;
+            esac
+            case " $drafts " in
+                *" $tag "*) draft=true ;;
+            esac
+            [ "$first" = yes ] || printf ',\n'
+            first=no
+            printf '  {\n    "name": "whirl-ui %s",\n    "prerelease": %s,\n    "tag_name": "%s",\n    "draft": %s\n  }' \
+                "$tag" "$prerelease" "$tag" "$draft"
+        done
+        printf '\n]\n'
+    } > "$path"
 }
 
 # sha_of <path>: the file's sha256, or `absent`.
@@ -711,5 +795,169 @@ receipt_has "$receipt" "binary $prefix/whirld" || fail "scenario 11: the reused 
 receipt_has "$receipt" "binary $prefix/whirl-worker" || fail "scenario 11: the reused whirl-worker is not named in the receipt"
 scenarios=$((scenarios + 1))
 ok "scenario 11: a daemon newer than the pin is reused, nothing downloaded, binaries untouched"
+
+# ---------------------------------------------------------------------------
+# 12. WHIRL_CHANNEL=unstable resolves the newest prerelease of each list, prints the pair
+#     before the first fetch, and installs it
+#
+# The app's list names an older candidate, a newer one, and a draft even newer than both: the
+# answer is the newest *published* prerelease, so a run that takes the list's own order or
+# that resolves to a draft fails here rather than passing by luck.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 12: WHIRL_CHANNEL=unstable resolves a pair and installs it ==="
+s12=$work/s12
+prefix=$s12/prefix
+ui=$s12/ui
+receipt=$s12/receipt
+home=$s12/home
+mkdir -p "$prefix" "$ui" "$home" "$(dirname "$receipt")"
+write_releases "$s12/app-releases.json" "v0.2.9" "v0.3.0-rc.1 v0.3.0-rc.3 v0.3.0-rc.2" "v0.3.0-rc.9"
+write_releases "$s12/daemon-releases.json" "v0.2.0" "v0.3.1-rc.1 v0.3.1-rc.2" ""
+out=$(run_channel "$prefix" "$ui" "$receipt" "$s12/app-releases.json" "$s12/daemon-releases.json" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 12: install.sh exited $status"
+contains "$out" "channel:  unstable" || fail "scenario 12: the run does not say which channel it resolved"
+contains "$out" "app        v0.3.0-rc.3" ||
+    fail "scenario 12: the app tag it printed is not the newest prerelease of the app's list"
+contains "$out" "daemon     v0.3.1-rc.2" ||
+    fail "scenario 12: the daemon tag it printed is not the newest prerelease of the daemon's list"
+contains "$out" "rc.1" && fail "scenario 12: an older prerelease was resolved to"
+contains "$out" "rc.9" && fail "scenario 12: a draft was resolved to"
+channel_line=$(printf '%s\n' "$out" | grep -n 'channel:  unstable' | head -1 | cut -d: -f1)
+fetch_line=$(printf '%s\n' "$out" | grep -n 'fetching' | head -1 | cut -d: -f1)
+[ -n "$channel_line" ] && [ -n "$fetch_line" ] && [ "$channel_line" -lt "$fetch_line" ] ||
+    fail "scenario 12: the pair was not printed before the first archive was fetched"
+receipt_has "$receipt" "channel unstable" || fail "scenario 12: the receipt does not name the channel"
+receipt_has "$receipt" "app-tag v0.3.0-rc.3" ||
+    fail "scenario 12: the receipt does not name the app tag it resolved"
+receipt_has "$receipt" "daemon-tag v0.3.1-rc.2" ||
+    fail "scenario 12: the receipt does not name the daemon tag it resolved"
+receipt_has "$receipt" "binary $prefix/whirl" || fail "scenario 12: the receipt does not name the installed daemon"
+receipt_has "$receipt" "app $ui/Whirl.app" || fail "scenario 12: the receipt does not name the installed app"
+out=$(run_uninstall "$home" "$sys_path" "$receipt" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || fail "scenario 12: uninstall.sh exited $status"
+[ ! -e "$prefix/whirl" ] || fail "scenario 12: uninstall.sh left $prefix/whirl"
+[ ! -e "$prefix/whirld" ] || fail "scenario 12: uninstall.sh left $prefix/whirld"
+[ ! -e "$ui/Whirl.app" ] || fail "scenario 12: uninstall.sh left the app"
+[ ! -f "$receipt" ] || fail "scenario 12: uninstall.sh left the receipt, tags and all"
+scenarios=$((scenarios + 1))
+ok "scenario 12: the channel resolved the newest prereleases, printed them before the download, installed that pair, and its receipt undoes the same three roots"
+
+# ---------------------------------------------------------------------------
+# 13. a repository with no prerelease stops the run instead of installing a final release
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 13: a repository with no prerelease stops the run ==="
+s13=$work/s13
+prefix=$s13/prefix
+ui=$s13/ui
+receipt=$s13/receipt
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+write_releases "$s13/app-releases.json" "v0.2.0 v0.2.1" "" ""
+write_releases "$s13/daemon-releases.json" "v0.2.0" "v0.3.1-rc.1" ""
+out=$(run_channel "$prefix" "$ui" "$receipt" "$s13/app-releases.json" "$s13/daemon-releases.json" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 13: install.sh exited $status, not 1, where there is no prerelease to resolve"
+contains "$out" "guruor/whirl-ui has published no prerelease" ||
+    fail "scenario 13: the run does not say which repository has none"
+contains "$out" "nothing was installed in its place" ||
+    fail "scenario 13: the refusal does not say it installed nothing instead"
+contains "$out" "fetching" && fail "scenario 13: an archive was fetched although nothing was resolved"
+[ ! -f "$receipt" ] || fail "scenario 13: a run that resolved nothing wrote a receipt"
+[ ! -e "$ui/Whirl.app" ] || fail "scenario 13: a run that resolved nothing installed the app"
+[ ! -e "$prefix/whirl" ] || fail "scenario 13: a run that resolved nothing installed a daemon"
+scenarios=$((scenarios + 1))
+ok "scenario 13: a repository with no prerelease stops the run, with nothing installed and nothing recorded"
+
+# ---------------------------------------------------------------------------
+# 14. a channel this script does not know is refused by name
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 14: an unknown channel is refused by name ==="
+s14=$work/s14
+prefix=$s14/prefix
+ui=$s14/ui
+receipt=$s14/receipt
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+out=$(run_plain "$prefix" "$ui" "$receipt" WHIRL_CHANNEL=beta 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 14: install.sh exited $status, not 1, for a channel it does not know"
+contains "$out" "WHIRL_CHANNEL=beta is not a channel this script knows" ||
+    fail "scenario 14: the refusal does not name the value it was given"
+contains "$out" "\`unstable\`" || fail "scenario 14: the refusal does not name the channel there is"
+[ ! -f "$receipt" ] || fail "scenario 14: a refused run wrote a receipt"
+scenarios=$((scenarios + 1))
+ok "scenario 14: an unknown channel value is refused by name, installing nothing"
+
+# ---------------------------------------------------------------------------
+# 15. a channel beside a version override is refused: the pair would not be the one resolved
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 15: a channel beside a version override is refused ==="
+s15=$work/s15
+prefix=$s15/prefix
+ui=$s15/ui
+receipt=$s15/receipt
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+out=$(run_plain "$prefix" "$ui" "$receipt" WHIRL_CHANNEL=unstable WHIRL_UI_VERSION="$ui_version" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 15: install.sh exited $status, not 1, with WHIRL_UI_VERSION beside a channel"
+contains "$out" "WHIRL_UI_VERSION is set as well" ||
+    fail "scenario 15: the refusal does not name the override that was set"
+out=$(run_plain "$prefix" "$ui" "$receipt" WHIRL_CHANNEL=unstable WHIRL_VERSION="$whirl_version" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 15: install.sh exited $status, not 1, with WHIRL_VERSION beside a channel"
+contains "$out" "WHIRL_VERSION is set as well" ||
+    fail "scenario 15: the refusal does not name the override that was set"
+[ ! -f "$receipt" ] || fail "scenario 15: a refused run wrote a receipt"
+scenarios=$((scenarios + 1))
+ok "scenario 15: a version override beside a channel is refused, so the pair installed is the pair resolved"
+
+# ---------------------------------------------------------------------------
+# 16. a release list that cannot be read stops the run
+#
+# Two shapes: the file is not there at all, and the file is the object api.github.com answers
+# a rate limit with. Neither is read as "no prerelease" or as "nothing to do": a list this
+# script cannot read is a channel it cannot resolve, and it stops.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== scenario 16: a release list that cannot be read stops the run ==="
+s16=$work/s16
+prefix=$s16/prefix
+ui=$s16/ui
+receipt=$s16/receipt
+mkdir -p "$prefix" "$ui" "$(dirname "$receipt")"
+write_releases "$s16/daemon-releases.json" "v0.2.0" "v0.3.1-rc.1" ""
+out=$(run_channel "$prefix" "$ui" "$receipt" "$s16/no-such-list.json" "$s16/daemon-releases.json" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 16: install.sh exited $status, not 1, with no list to read"
+contains "$out" "cannot read guruor/whirl-ui's release list" ||
+    fail "scenario 16: the run does not say which list it could not read"
+printf '{"message": "API rate limit exceeded for 203.0.113.7.", "documentation_url": "https://docs.github.com/rest"}\n' \
+    > "$s16/rate-limited.json"
+out=$(run_channel "$prefix" "$ui" "$receipt" "$s16/rate-limited.json" "$s16/daemon-releases.json" 2>&1)
+status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 1 ] || fail "scenario 16: install.sh exited $status, not 1, on a body that names no release"
+contains "$out" "cannot read a release list" ||
+    fail "scenario 16: a body that names no release is not reported as a list that could not be read"
+contains "$out" "fetching" && fail "scenario 16: an archive was fetched although nothing was resolved"
+[ ! -f "$receipt" ] || fail "scenario 16: a run that resolved nothing wrote a receipt"
+scenarios=$((scenarios + 1))
+ok "scenario 16: a release list that cannot be read stops the run, with nothing installed"
 
 printf '\ntest-install: all %s scenarios passed\n' "$scenarios"

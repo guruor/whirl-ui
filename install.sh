@@ -72,15 +72,17 @@
 #   WHIRL_PREFIX       ~/.local/bin        where the three daemon binaries go
 #   WHIRL_UNIT         unset                set to `install` to ask whirl's own command
 #                                          to install its login unit; unset writes none
-#   WHIRL_CHANNEL      unset                reserved, and not read yet: `unstable` would
-#                                          resolve the newest prerelease of each repository,
-#                                          and a run would take those two tags and print
-#                                          them. See the candidates below.
+#   WHIRL_CHANNEL      unset                `unstable` resolves the newest prerelease of each
+#                                          repository, prints both tags before either archive
+#                                          is downloaded, and installs that pair. Any other
+#                                          value is refused by name. See below.
+#   WHIRL_UI_RELEASES  the app's release list, read only to resolve `unstable`
+#   WHIRL_RELEASES     the daemon's release list, read only to resolve `unstable`
 #
-# A release candidate is installed through the two version overrides, and that is the only
-# route there is. The script takes no arguments: anything but --help exits 2, and
-# scripts/check-release-pins.sh compares these two defaults against the tag before anything
-# is built, so the word for a candidate is an environment override and not a flag.
+# A candidate is installed by naming it, with the two version overrides, or by asking for the
+# channel that resolves it. The script takes no arguments: anything but --help exits 2, and
+# scripts/check-release-pins.sh compares the app default against the tag before anything is
+# built, so the word for a candidate is an environment override and not a flag.
 #
 # The two are not written the same way, because the two repositories name the same thing
 # differently: the app's default is the bare number 0.2.4 and its tag adds the v, while the
@@ -92,16 +94,22 @@
 #
 #   WHIRL_UI_VERSION=0.2.5-rc.1 WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
 #       both halves at candidates: the app from the tag v0.2.5-rc.1, which is the archive
-#       Whirl-0.2.5-rc.1.zip, and the daemon from the tag v0.2.2-rc.2. No app candidate has
-#       been published, so this half is the shape to reach for when one is, and until then
-#       it stops at the app's download.
+#       Whirl-0.2.5-rc.1.zip, and the daemon from the tag v0.2.2-rc.2.
 #
-# WHIRL_CHANNEL=unstable is the form to build later, and it is not built: it would resolve
-# the newest prerelease of each repository and print what it resolved, so the pair a run
-# installs is on record rather than guessed. Resolution makes a run non-reproducible until
-# the resolved tags are printed and written with the receipt, which is why the two commands
-# above name their candidates instead. Set today, `WHIRL_CHANNEL=unstable sh install.sh`
-# installs exactly what no override installs: nothing in this script reads it.
+# WHIRL_CHANNEL=unstable is the resolving form of those two overrides and names no candidate
+# itself. It reads each repository's release list, takes the newest prerelease of each, prints
+# the two tags, and installs that pair:
+#
+#   WHIRL_CHANNEL=unstable sh install.sh
+#
+# Both tags are printed before either archive is downloaded and written with the receipt,
+# because resolving makes a run non-reproducible: the same command installs whatever the two
+# repositories' newest prereleases are that day, so the pair it installed has to be on record
+# rather than guessed. Two runs stop instead of picking something else, because a channel that
+# quietly installs something else is the defect this exists to avoid: a repository whose list
+# holds no prerelease, and a channel beside a version override, where the pair would no longer
+# be the one the channel resolved. `unstable` is the only channel this script knows and any
+# other value is refused by name.
 #
 # Exit codes: 0 installed or reused, as reported; 1 refused (platform, download,
 # checksum, unwritable destination); 2 no arguments are taken; 3 the app's prefix needs
@@ -121,6 +129,12 @@ It downloads the whirl daemon archive and the Whirl.app archive, checks each aga
 the sha256 published beside it, and installs the binaries. It never writes the daemon's
 login unit: startup is set by the app on first run, or, without the app, by
 `whirl daemon install`. WHIRL_UNIT=install asks whirl's own command for that unit.
+
+WHIRL_CHANNEL=unstable installs a candidate pair instead: it reads each repository's
+release list, takes the newest prerelease of each, prints the two tags before either
+archive is downloaded, and installs that pair. It stops rather than pick anything else
+when a repository has no prerelease, when the channel is a word this script does not
+know, and when a version override sits beside it.
 
 The app and the daemon are installed as one release: a daemon already here is reused
 only when it is the same release or newer, and an older daemon is replaced by the
@@ -153,6 +167,9 @@ Overrides (optional; the defaults are the published release):
   WHIRL_SHA256       path or URL of its checksum
   WHIRL_PREFIX       ~/.local/bin
   WHIRL_UNIT         unset: no login unit. `install` runs `whirl daemon install`
+  WHIRL_CHANNEL      unset: the pinned releases above. `unstable` resolves the newest
+                     prerelease of each repository, prints both tags before either archive
+                     is downloaded, and installs that pair
 
 Undo: sh uninstall.sh
 USAGE
@@ -198,6 +215,11 @@ esac
 # the defaults, and the overrides
 # ---------------------------------------------------------------------------
 
+# Which of the two the reader named is asked before the defaults below fill them in: a channel
+# resolves both halves itself, and a version override beside it is refused rather than quietly
+# preferred (see the channel below).
+WHIRL_UI_VERSION_given=${WHIRL_UI_VERSION+yes}
+WHIRL_VERSION_given=${WHIRL_VERSION+yes}
 WHIRL_UI_VERSION=${WHIRL_UI_VERSION:-0.2.4}
 WHIRL_VERSION=${WHIRL_VERSION:-v0.2.1}
 
@@ -205,11 +227,6 @@ ui_prefix=${WHIRL_UI_PREFIX:-/Applications}
 daemon_prefix=${WHIRL_PREFIX:-$HOME/.local/bin}
 app="$ui_prefix/Whirl.app"
 receipt=${WHIRL_UI_RECEIPT:-$HOME/Library/Application Support/whirl-ui/install.receipt}
-
-ui_archive=${WHIRL_UI_ARCHIVE:-${WHIRL_UI_BASE:-https://github.com/guruor/whirl-ui/releases/download/v$WHIRL_UI_VERSION}/Whirl-$WHIRL_UI_VERSION.zip}
-ui_sha=${WHIRL_UI_SHA256:-$ui_archive.sha256}
-daemon_archive=${WHIRL_ARCHIVE:-${WHIRL_BASE:-https://github.com/guruor/whirl/releases/download/$WHIRL_VERSION}/whirl-$WHIRL_VERSION-macos-arm64.tar.gz}
-daemon_sha=${WHIRL_SHA256:-$daemon_archive.sha256}
 
 # Is the app's destination outside your home? /Applications is, and a write there is the
 # one step in this script macOS may put its authorization dialog in front of.
@@ -337,6 +354,95 @@ daemon_binary() {
     fi
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# the channel: what WHIRL_CHANNEL=unstable resolves, and the archives the two tags name
+#
+# This runs before the plan below because it settles the two versions the plan installs, and
+# because the pair it resolves is printed here: a channel makes a run non-reproducible, so
+# both tags are on record before either archive is fetched, and both are written with the
+# receipt at the end.
+# ---------------------------------------------------------------------------
+
+ui_repo=guruor/whirl-ui
+daemon_repo=guruor/whirl
+WHIRL_UI_RELEASES=${WHIRL_UI_RELEASES:-https://api.github.com/repos/$ui_repo/releases?per_page=100}
+WHIRL_RELEASES=${WHIRL_RELEASES:-https://api.github.com/repos/$daemon_repo/releases?per_page=100}
+
+channel=${WHIRL_CHANNEL:-}
+ui_tag=
+daemon_tag=
+
+# newest_prerelease <repository> <releases-url>: the newest published prerelease of that
+# repository, on stdout. The list is the GitHub API's, and plutil reads it by key name, so
+# neither the order of the keys nor the whitespace around them is relied on. A draft is not
+# published and is skipped, and the tags are compared as versions rather than taken in the
+# order the list carries them, so the answer is the newest prerelease and not the most
+# recently opened one. Every way of not answering stops the run instead: nothing is returned
+# for a caller to fall back on.
+newest_prerelease() {
+    repo=$1
+    list=$2
+    json="$work/releases-$(printf '%s' "$repo" | tr / -).json"
+    fetch "$list" "$json" ||
+        refuse "cannot read $repo's release list at $list, so which prerelease \`unstable\` names for it is unknown; nothing was installed"
+    i=0
+    releases=0
+    newest=
+    while :; do
+        tag=$(plutil -extract "$i.tag_name" raw -o - "$json" 2>/dev/null) || break
+        releases=$((releases + 1))
+        draft=$(plutil -extract "$i.draft" raw -o - "$json" 2>/dev/null || printf 'true')
+        prerelease=$(plutil -extract "$i.prerelease" raw -o - "$json" 2>/dev/null || printf 'false')
+        i=$((i + 1))
+        [ "$prerelease" = true ] && [ "$draft" = false ] || continue
+        # A prerelease tag is vX.Y.Z-<something>. Anything else in a list is not a tag this
+        # script installs by name, so it is passed over rather than resolved to.
+        case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*-*) ;;
+            *) continue ;;
+        esac
+        if [ -z "$newest" ] || version_ge "${tag#v}" "${newest#v}"; then
+            newest=$tag
+        fi
+    done
+    [ "$releases" -gt 0 ] ||
+        refuse "cannot read a release list at $list: it names no release, so which prerelease \`unstable\` would resolve for $repo is unknown; nothing was installed"
+    [ -n "$newest" ] ||
+        refuse "$repo has published no prerelease ($list names only final releases), so \`unstable\` resolves nothing for it; nothing was installed, and nothing was installed in its place: a channel that quietly installs something else is the defect this exists to avoid"
+    printf '%s\n' "$newest"
+}
+
+case "$channel" in
+    '')
+        ;;
+    unstable)
+        if [ -n "$WHIRL_UI_VERSION_given" ]; then
+            refuse "WHIRL_CHANNEL=unstable resolves both halves itself, and WHIRL_UI_VERSION is set as well; set one or the other, because the pair a channel run installs is the pair it resolved"
+        fi
+        if [ -n "$WHIRL_VERSION_given" ]; then
+            refuse "WHIRL_CHANNEL=unstable resolves both halves itself, and WHIRL_VERSION is set as well; set one or the other, because the pair a channel run installs is the pair it resolved"
+        fi
+        ui_tag=$(newest_prerelease "$ui_repo" "$WHIRL_UI_RELEASES") || exit 1
+        daemon_tag=$(newest_prerelease "$daemon_repo" "$WHIRL_RELEASES") || exit 1
+        WHIRL_UI_VERSION=${ui_tag#v}
+        WHIRL_VERSION=$daemon_tag
+        note "channel:  unstable, resolved before either archive is downloaded"
+        note "  app        $ui_tag   the newest prerelease of $ui_repo"
+        note "  daemon     $daemon_tag   the newest prerelease of $daemon_repo"
+        note "  note       a channel makes a run non-reproducible, so both tags are printed here"
+        note "             and written with the receipt: this is the pair this run installs."
+        ;;
+    *)
+        refuse "WHIRL_CHANNEL=$channel is not a channel this script knows, so nothing was resolved and nothing was installed. The one channel it has is \`unstable\`; with WHIRL_CHANNEL unset it installs the pinned pair it names, the app $WHIRL_UI_VERSION and the daemon $WHIRL_VERSION"
+        ;;
+esac
+
+# The two archives, named once the versions above are settled: a channel run resolved them.
+ui_archive=${WHIRL_UI_ARCHIVE:-${WHIRL_UI_BASE:-https://github.com/guruor/whirl-ui/releases/download/v$WHIRL_UI_VERSION}/Whirl-$WHIRL_UI_VERSION.zip}
+ui_sha=${WHIRL_UI_SHA256:-$ui_archive.sha256}
+daemon_archive=${WHIRL_ARCHIVE:-${WHIRL_BASE:-https://github.com/guruor/whirl/releases/download/$WHIRL_VERSION}/whirl-$WHIRL_VERSION-macos-arm64.tar.gz}
+daemon_sha=${WHIRL_SHA256:-$daemon_archive.sha256}
 
 # ---------------------------------------------------------------------------
 # plan: reuse first, and verify everything before anything is written
@@ -489,6 +595,17 @@ fi
 # ---------------------------------------------------------------------------
 # install: nothing above this line wrote to the machine
 # ---------------------------------------------------------------------------
+
+# A channel's resolution is the one thing about a run that its command does not say, so it
+# goes into the receipt here, at the first line that writes anything: a run that refused above
+# (an unwritable destination, a missing checksum, a repository with no prerelease) writes no
+# receipt and leaves nothing to undo, exactly as before. uninstall.sh removes the paths the
+# receipt names and passes over these lines.
+if [ -n "$channel" ]; then
+    record channel "$channel"
+    record app-tag "$ui_tag"
+    record daemon-tag "$daemon_tag"
+fi
 
 if [ "$daemon_action" = install ]; then
     mkdir -p "$daemon_prefix"
