@@ -29,6 +29,14 @@ name: release
 # the daemon with it, while the release page, the archive and the checksum all said 0.2.1.
 # `pin` runs that comparison against the tag, and `bundle` waits behind it too, so a
 # release whose script points at another release publishes nothing.
+#
+# A candidate is cut the same way and differs in two places, both of them about what a
+# reader who did not ask for one gets. The `pin` gate resolves the app default instead of
+# comparing it with the tag, because a candidate is opted into, by name or by channel, and is
+# never what the defaults install. And the release is published as a GitHub prerelease
+# (`--prerelease`, on a version with a hyphen in it), so it is not offered as this
+# repository's latest release; `WHIRL_CHANNEL=unstable` is what resolves candidates, and the
+# daemon's release workflow states the same rule for the same kind of tag.
 
 on:
   push:
@@ -158,10 +166,13 @@ jobs:
           fi
           # The version names a filename and a release, so it is checked rather
           # than trusted: a tag that is not a version is a run that stops here.
+          # A candidate, `vX.Y.Z-<something>`, passes this the same as a final
+          # version does: it is a version with a hyphen in it, and the release it
+          # publishes is the same archive built the same way.
           case "$version" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
             *)
-              echo "release: $version is not a version tag (v<major>.<minor>.<patch>)" >&2
+              echo "release: $version is not a version tag (v<major>.<minor>.<patch>) or a candidate of one (v<major>.<minor>.<patch>-<something>)" >&2
               exit 1
               ;;
           esac
@@ -188,7 +199,22 @@ jobs:
             echo "::error::no release notes at $notes, so this release would point at nothing. Write the notes for $VERSION, land them on main, and rerun."
             exit 1
           fi
-          gh release create "$VERSION" \
-            --title "whirl-ui $VERSION" \
+          # A version with a hyphen in it is a candidate, and a candidate is published
+          # as one. `gh release create` marks nothing on its own, so without this a
+          # candidate would read as a final release: offered as the repository's
+          # latest, handed to a reader who did not ask for a candidate, and resolved
+          # by nothing that resolves candidates. The daemon's release workflow states
+          # the same rule for the same tags.
+          set -- --title "whirl-ui $VERSION" \
             --notes "Whirl.app $VERSION, and what this build is: https://github.com/$REPO/blob/$VERSION/$notes" \
             dist/*.zip dist/*.zip.sha256
+          case "$VERSION" in
+            *-*) set -- --prerelease "$@" ;;
+          esac
+          gh release create "$VERSION" "$@"
+          # What was published is read back out of the API rather than assumed: the log
+          # of the run that cut the release says whether it is a prerelease, and which
+          # files are on it.
+          gh release view "$VERSION" --repo "$REPO" \
+            --json tagName,isPrerelease,isDraft,assets \
+            --jq '"  \(.tagName) prerelease=\(.isPrerelease) draft=\(.isDraft)", (.assets[] | "  \(.name) \(.size) bytes")'

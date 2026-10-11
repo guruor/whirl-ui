@@ -56,30 +56,63 @@ both routes step by step, and the paths either one touches.
 ### A release candidate
 
 `install.sh` carries the two releases it installs as defaults of its own, and it takes no arguments:
-anything but `--help` exits 2, and `scripts/check-release-pins.sh` compares those two defaults with
-the tag before anything is built. A prerelease therefore reaches a machine as an environment
+anything but `--help` exits 2, and `scripts/check-release-pins.sh` checks those two defaults before
+anything is built. A prerelease therefore reaches a machine by the channel below or by an environment
 override, and the overrides are listed in the script's header.
 
 The daemon at a candidate, with the app left at its release:
 
-    WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+    WHIRL_VERSION=v0.2.2-rc.3 sh install.sh
 
-Both halves at candidates. The two repositories write the value differently, which is the one thing
-to get right: the app's default is the bare version number and its tag is that number with a `v` in
-front, while the daemon's default already carries the `v`. So the tag `v0.2.5-rc.1` is
+Both halves at candidates. The two repositories write the value differently, which is the one thing to
+get right: the app's default is the bare version number and its tag is that number with a `v` in front,
+while the daemon's default already carries the `v`. So the tag `v0.2.5-rc.1` is
 `WHIRL_UI_VERSION=0.2.5-rc.1`:
 
-    WHIRL_UI_VERSION=0.2.5-rc.1 WHIRL_VERSION=v0.2.2-rc.2 sh install.sh
+    WHIRL_UI_VERSION=0.2.5-rc.1 WHIRL_VERSION=v0.2.2-rc.3 sh install.sh
 
-No app candidate has been published yet, so that second command stops at the app's download until
-one is; the daemon candidate in both commands is published.
+### The unstable build
 
-`WHIRL_CHANNEL` is the reserved word for the resolving form of this, and it is not built. Set to
-`unstable` it would resolve the newest prerelease of each repository and print what it resolved, so
-the pair a run installs is on record; it is a variable and not a flag for the same reason as every
-other override, and it is not read yet, so `WHIRL_CHANNEL=unstable sh install.sh` installs exactly
-what no override installs. Resolution arrives with the printing it needs, because a channel makes a
-run non-reproducible until the two tags it resolved are named with the run.
+`WHIRL_CHANNEL=unstable` installs the newest prerelease of each repository, app and daemon together. It
+reads both repositories' release lists, prints the two tags it settled on, and installs that pair. The
+script has to be one that reads the channel: `v0.2.5-rc.1` carries it and so does `main`, while a script
+from an older tag, `v0.2.4` included, does not read `WHIRL_CHANNEL` at all and would install the pinned
+pair with the variable sitting unread.
+
+    curl -fsSLO https://raw.githubusercontent.com/guruor/whirl-ui/v0.2.5-rc.1/install.sh
+    less install.sh
+    WHIRL_CHANNEL=unstable sh install.sh
+
+What that printed when this section was written (2026-10-11), before it downloaded either archive:
+
+    channel:  unstable, resolved before either archive is downloaded
+      app        v0.2.5-rc.1   the newest prerelease of guruor/whirl-ui
+      daemon     v0.2.2-rc.3   the newest prerelease of guruor/whirl
+      note       a channel makes a run non-reproducible, so both tags are printed here
+                 and written with the receipt: this is the pair this run installs.
+
+Read those lines as part of the install. An unstable pair is not reproducible: it is whatever each
+repository's newest prerelease is on the day the command runs, and the two repositories are released
+independently. `unstable` is also not "the newest build of each repository", because a release can
+follow its own prerelease: the daemon published `v0.2.2` after `v0.2.2-rc.3`, so the channel reaches
+for `v0.2.2-rc.3` while the released pair pins the older daemon `v0.2.1`. The pair that was installed
+is in the receipt and not only in the terminal:
+
+    grep -E 'channel|app-tag|daemon-tag' ~/Library/Application\ Support/whirl-ui/install.receipt
+
+Going back to the released pair is two commands, and the first one is the one that matters:
+
+    sh uninstall.sh
+    sh install.sh
+
+`sh install.sh` on its own is not the way back: it replaces the app with the pinned release, and it
+reuses a daemon that is the pinned release or newer, which the candidate's daemon is, so the candidate
+daemon would stay. What a run does when it cannot resolve is stop rather than fall back: with no
+prerelease published in a repository, with a channel value the script does not know, and with a version
+override beside a channel, `install.sh` installs nothing and says which of those it was.
+
+What the candidate the channel currently resolves carries is in
+[`docs/releases/v0.2.5-rc.1.md`](docs/releases/v0.2.5-rc.1.md).
 
 ## Features
 
